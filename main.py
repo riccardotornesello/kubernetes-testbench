@@ -4,6 +4,7 @@ from typing import List
 from config import validate_config_file, ClusterConfig, RuntimeEnum
 from clusters.base import Cluster
 from clusters.k3d import K3d
+from clusters.kind import Kind
 from tools.liqo import LiqoTool
 from const import DOCKER_NETWORK_NAME
 
@@ -47,6 +48,14 @@ def parse(cluster_configs: List[ClusterConfig]) -> List[Cluster]:
         match cfg.runtime:
             case RuntimeEnum.k3d:
                 cluster = K3d(
+                    name=cfg.name,
+                    nodes=cfg.nodes,
+                    cluster_cidr=cfg.cluster_cidr,
+                    service_cidr=cfg.service_cidr,
+                    cni=cfg.cni,
+                )
+            case RuntimeEnum.kind:
+                cluster = Kind(
                     name=cfg.name,
                     nodes=cfg.nodes,
                     cluster_cidr=cfg.cluster_cidr,

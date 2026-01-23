@@ -1,6 +1,7 @@
 import subprocess
 from typing import Dict
 
+from clusters.kind import Kind
 from config import LiqoConfig
 from tools.base import Tool
 from clusters.k3d import K3d
@@ -28,6 +29,13 @@ class LiqoTool(Tool):
                     api_server_url=f"https://{cluster.get_api_server_address()}:6443",
                     pod_cidr=cluster.cluster_cidr,
                     service_cidr=cluster.service_cidr,
+                )
+            elif isinstance(cluster, Kind):
+                self._install_in_cluster(
+                    runtime="kind",
+                    cluster_id=cluster.name,
+                    kubeconfig=cluster.get_kubeconfig_location(),
+                    version=installation.version,
                 )
             else:
                 raise ValueError(

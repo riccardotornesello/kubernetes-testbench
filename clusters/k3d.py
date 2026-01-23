@@ -15,8 +15,8 @@ class K3d(Cluster):
     IMAGE = "docker.io/rancher/k3s:v1.30.2-k3s2"  # TODO custom image
 
     def init_cluster(self) -> None:
-        config = self._gen_config()
-        config_yaml = yaml.dump(config)
+        cluster_config = self._gen_config()
+        cluster_config_yaml = yaml.dump(cluster_config)
 
         additional_args = []
 
@@ -42,7 +42,7 @@ class K3d(Cluster):
                 "--kubeconfig-update-default=false",
             ]
             + additional_args,
-            input=config_yaml.encode(),
+            input=cluster_config_yaml.encode(),
             check=True,
         )
 

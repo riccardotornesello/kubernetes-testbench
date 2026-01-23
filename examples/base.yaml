@@ -1,11 +1,11 @@
 clusters:
   - name: "rome"
-    runtime: "k3d"
-    cni: "calico"
+    runtime: "kind"
+    cni: "kindnet"
     nodes: 2
   - name: "milan"
-    runtime: "k3d"
-    cni: "calico"
+    runtime: "kind"
+    cni: "kindnet"
     nodes: 2
 
 tools:

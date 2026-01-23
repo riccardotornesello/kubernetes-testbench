@@ -7,12 +7,14 @@ from pydantic import BaseModel, Field, model_validator, ValidationError
 
 class RuntimeEnum(str, Enum):
     k3d = "k3d"
+    kind = "kind"
 
 
 class CNIEnum(str, Enum):
     calico = "calico"
     flannel = "flannel"
     cilium = "cilium"
+    kindnet = "kindnet"
 
 
 class LiqoInstallationConfig(BaseModel):
@@ -69,7 +71,10 @@ class RootConfig(BaseModel):
             ]
 
             for field in inheritable_fields:
-                if getattr(cluster, field) is None and getattr(self.default, field) is not None:
+                if (
+                    getattr(cluster, field) is None
+                    and getattr(self.default, field) is not None
+                ):
                     setattr(cluster, field, getattr(self.default, field))
 
         return self
