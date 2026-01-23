@@ -1,9 +1,20 @@
 [project]
-name = "testbench"
+name = "kubernetes-testbench"
 version = "0.1.0"
-description = "Add your description here"
+description = "A flexible and extensible tool for creating and managing virtual Kubernetes clusters locally for testing and development purposes"
 readme = "README.md"
 requires-python = ">=3.12"
+authors = [
+    { name = "Riccardo Tornesello" }
+]
+keywords = ["kubernetes", "k3d", "testing", "development", "liqo", "multi-cluster"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Testing",
+    "Topic :: System :: Clustering",
+    "Programming Language :: Python :: 3.12",
+]
 dependencies = [
     "kubernetes>=34.1.0",
     "pydantic>=2.12.5",

@@ -1,0 +1,26 @@
+# Multi-CNI Example
+#
+# Demonstrates creating multiple clusters with different CNI plugins.
+# Useful for testing CNI-specific features or comparing networking solutions.
+
+clusters:
+  - name: "calico-cluster"
+    runtime: "k3d"
+    cni: "calico"
+    nodes: 2
+    cluster_cidr: "10.200.0.0/16"
+    service_cidr: "10.71.0.0/16"
+
+  - name: "cilium-cluster"
+    runtime: "k3d"
+    cni: "cilium"
+    nodes: 2
+    cluster_cidr: "10.201.0.0/16"
+    service_cidr: "10.72.0.0/16"
+
+  - name: "flannel-cluster"
+    runtime: "k3d"
+    cni: "flannel"
+    nodes: 1
+    cluster_cidr: "10.202.0.0/16"
+    service_cidr: "10.73.0.0/16"

@@ -1,0 +1,10 @@
+# Single Cluster Example
+# 
+# This is the simplest possible configuration - a single Kubernetes cluster
+# with default settings. Perfect for basic testing or learning.
+
+clusters:
+  - name: "test-cluster"
+    runtime: "k3d"
+    cni: "calico"
+    nodes: 1

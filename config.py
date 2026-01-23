@@ -1,3 +1,15 @@
+"""
+Configuration Module for Kubernetes Testbench
+
+This module handles configuration parsing, validation, and data models
+for the testbench. It uses Pydantic for schema validation and supports
+inheritance of default values across clusters.
+
+The configuration hierarchy:
+1. Default values (optional) apply to all clusters
+2. Individual cluster values override defaults
+3. Validation ensures consistency and catches errors early
+"""
 import yaml
 import os
 from enum import Enum
@@ -6,30 +18,41 @@ from pydantic import BaseModel, Field, model_validator, ValidationError
 
 
 class RuntimeEnum(str, Enum):
+    """Supported cluster runtime environments."""
     k3d = "k3d"
 
 
 class CNIEnum(str, Enum):
+    """Supported Container Network Interface (CNI) plugins."""
     calico = "calico"
     flannel = "flannel"
     cilium = "cilium"
 
 
 class LiqoInstallationConfig(BaseModel):
+    """Configuration for Liqo installation in a specific cluster."""
     cluster: str
     version: Optional[str] = None
 
 
 class LiqoConfig(BaseModel):
+    """Configuration for Liqo multi-cluster networking tool."""
     installations: List[LiqoInstallationConfig] = Field(default_factory=list)
     peerings: List[Tuple[str, str]] = Field(default_factory=list)
 
 
 class ToolsConfig(BaseModel):
+    """Configuration for additional tools to install."""
     liqo: Optional[LiqoConfig] = None
 
 
 class CommonConfig(BaseModel):
+    """
+    Default configuration values that can be inherited by clusters.
+    
+    These values provide sensible defaults for cluster creation and can be
+    overridden on a per-cluster basis.
+    """
     runtime: RuntimeEnum = RuntimeEnum.k3d
     cni: CNIEnum = CNIEnum.calico
     nodes: int = 1
@@ -38,6 +61,12 @@ class CommonConfig(BaseModel):
 
 
 class ClusterConfig(BaseModel):
+    """
+    Configuration for an individual Kubernetes cluster.
+    
+    All fields except 'name' are optional and will inherit from the 'default'
+    section if not specified.
+    """
     name: str
 
     runtime: Optional[RuntimeEnum] = None
@@ -48,6 +77,14 @@ class ClusterConfig(BaseModel):
 
 
 class RootConfig(BaseModel):
+    """
+    Root configuration model representing the entire configuration file.
+    
+    This model includes validators to:
+    - Merge default values into cluster configurations
+    - Ensure cluster names are unique
+    - Validate cross-cluster relationships
+    """
     default: Optional[CommonConfig] = Field(default_factory=CommonConfig)
     clusters: List[ClusterConfig]
     tools: Optional[ToolsConfig] = Field(default_factory=ToolsConfig)
@@ -59,6 +96,10 @@ class RootConfig(BaseModel):
         PRE-VALIDATION HOOK.
         Merges values from the 'default' section into each cluster entry
         if the cluster doesn't specify them.
+        
+        This allows users to define common settings once and have them
+        automatically applied to all clusters, while still allowing
+        per-cluster overrides.
         """
         if not isinstance(data, dict):
             return data  # Let Pydantic handle the type error
@@ -95,6 +136,9 @@ class RootConfig(BaseModel):
         """
         POST-VALIDATION HOOK.
         Validates cross-cluster logic (uniqueness).
+        
+        Ensures that all cluster names are unique to prevent conflicts
+        during cluster creation and tool installation.
         """
         cluster_names = set()
 
@@ -112,7 +156,15 @@ class RootConfig(BaseModel):
 def format_pydantic_error(err):
     """
     Formats Pydantic location tuple into a readable string.
-    Example: ('clusters', 0, 'name') -> 'clusters.0.name'
+    
+    Args:
+        err: Pydantic error dictionary
+        
+    Returns:
+        Human-readable error message
+        
+    Example:
+        ('clusters', 0, 'name') -> 'clusters.0.name'
     """
     loc_path = ".".join(str(x) for x in err["loc"])
     # Remove 'root.' prefix if present for cleaner output
@@ -122,8 +174,15 @@ def format_pydantic_error(err):
 
 
 def validate_data(raw_data: Any) -> Optional[RootConfig]:
-    """Main function to run the validation."""
-
+    """
+    Validate raw configuration data against the schema.
+    
+    Args:
+        raw_data: Parsed YAML data (typically a dictionary)
+        
+    Returns:
+        Validated RootConfig object, or None if validation fails
+    """
     if raw_data is None:
         print("❌ File is empty.")
         return None
@@ -143,8 +202,15 @@ def validate_data(raw_data: Any) -> Optional[RootConfig]:
 
 
 def validate_config_file(file_path: str) -> Optional[RootConfig]:
-    """Loads and validates a YAML configuration file."""
-
+    """
+    Load and validate a YAML configuration file.
+    
+    Args:
+        file_path: Path to the YAML configuration file
+        
+    Returns:
+        Validated RootConfig object, or None if file doesn't exist or validation fails
+    """
     if not os.path.exists(file_path):
         print(f"❌ File not found: {file_path}")
         return None
