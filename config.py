@@ -52,29 +52,13 @@ class RootConfig(BaseModel):
     clusters: List[ClusterConfig]
     tools: Optional[ToolsConfig] = Field(default_factory=ToolsConfig)
 
-    @model_validator(mode="before")
-    @classmethod
-    def merge_defaults_into_clusters(cls, data):
+    @model_validator(mode="after")
+    def merge_defaults_into_clusters(self):
         """
-        PRE-VALIDATION HOOK.
         Merges values from the 'default' section into each cluster entry
         if the cluster doesn't specify them.
         """
-        if not isinstance(data, dict):
-            return data  # Let Pydantic handle the type error
-
-        defaults = data.get("default", {})
-        clusters = data.get("clusters", [])
-
-        if not isinstance(clusters, list):
-            return data  # Let Pydantic handle the type error
-
-        # We modify the raw dictionary data before Pydantic creates the objects.
-        # This ensures that when ClusterConfig is instantiated, it has all the data.
-        for cluster in clusters:
-            if not isinstance(cluster, dict):
-                continue
-
+        for cluster in self.clusters:
             # If missing in cluster AND present in default -> Copy from default
             inheritable_fields = [
                 "runtime",
@@ -85,15 +69,14 @@ class RootConfig(BaseModel):
             ]
 
             for field in inheritable_fields:
-                if field not in cluster and field in defaults:
-                    cluster[field] = defaults[field]
+                if getattr(cluster, field) is None and getattr(self.default, field) is not None:
+                    setattr(cluster, field, getattr(self.default, field))
 
-        return data
+        return self
 
     @model_validator(mode="after")
     def validate_global_logic(self):
         """
-        POST-VALIDATION HOOK.
         Validates cross-cluster logic (uniqueness).
         """
         cluster_names = set()

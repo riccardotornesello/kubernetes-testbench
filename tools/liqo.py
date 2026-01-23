@@ -25,7 +25,7 @@ class LiqoTool(Tool):
                     cluster_id=cluster.name,
                     kubeconfig=cluster.get_kubeconfig_location(),
                     version=installation.version,
-                    api_server_url=cluster.get_api_server_address(),
+                    api_server_url=f"https://{cluster.get_api_server_address()}:6443",
                     pod_cidr=cluster.cluster_cidr,
                     service_cidr=cluster.service_cidr,
                 )
@@ -83,6 +83,8 @@ class LiqoTool(Tool):
         for param, value in parameters.items():
             if value is not None:
                 command.extend([param, value])
+
+        print(f"Running command: {' '.join(command)}")
 
         # Execute installation command
         subprocess.run(command, check=True)
