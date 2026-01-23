@@ -1,9 +1,10 @@
 """
 Base CNI Module
 
-Defines the abstract base class for all CNI (Container Network Interface) implementations.
-CNI plugins are responsible for configuring network interfaces in containers,
-enabling pod-to-pod communication within and across nodes.
+Defines the abstract base class for all CNI (Container Network Interface)
+implementations. CNI plugins are responsible for configuring network
+interfaces in containers, enabling pod-to-pod communication within and
+across nodes.
 """
 from abc import ABC, abstractmethod
 

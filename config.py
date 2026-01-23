@@ -1,8 +1,9 @@
 """
 Configuration Module for Kubernetes Testbench
 
-This module handles configuration parsing, validation, and data models for the testbench.
-It uses Pydantic for schema validation and supports inheritance of default values across clusters.
+This module handles configuration parsing, validation, and data models
+for the testbench. It uses Pydantic for schema validation and supports
+inheritance of default values across clusters.
 
 The configuration hierarchy:
 1. Default values (optional) apply to all clusters

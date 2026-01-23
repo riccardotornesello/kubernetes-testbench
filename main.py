@@ -1,9 +1,9 @@
 """
 Kubernetes Testbench - Main Entry Point
 
-This module serves as the main entry point for the Kubernetes Testbench tool.
-It orchestrates the creation of virtual Kubernetes clusters, installation of CNI plugins,
-and deployment of additional tools like Liqo.
+This module serves as the main entry point for the Kubernetes Testbench
+tool. It orchestrates the creation of virtual Kubernetes clusters,
+installation of CNI plugins, and deployment of additional tools like Liqo.
 
 The workflow is:
 1. Create a Docker network for cluster communication
