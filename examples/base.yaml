@@ -1,0 +1,17 @@
+clusters:
+  - name: "rome"
+    runtime: "k3d"
+    cni: "calico"
+    nodes: 2
+  - name: "milan"
+    runtime: "k3d"
+    cni: "calico"
+    nodes: 2
+
+tools:
+  liqo:
+    installations:
+      - cluster: "rome"
+      - cluster: "milan"
+    peerings:
+      - ["rome", "milan"]
