@@ -8,6 +8,12 @@ from config import CNIEnum
 class Kind(Cluster):
     IMAGE = "kindest/node:v1.30.0"  # TODO custom image
 
+    def cleanup(self) -> None:
+        subprocess.run(
+            ["kind", "delete", "cluster", "--name", self.name],
+            check=True,
+        )
+
     def init_cluster(self) -> None:
         cluster_config = self._gen_config()
         cluster_config_yaml = yaml.dump(cluster_config)

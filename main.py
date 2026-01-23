@@ -9,6 +9,20 @@ from tools.liqo import LiqoTool
 from const import DOCKER_NETWORK_NAME
 
 
+def delete_docker_network(network_name: str) -> None:
+    print(f"Deleting Docker network: {network_name}")
+    try:
+        subprocess.run(
+            ["docker", "network", "rm", network_name],
+            check=True,
+            capture_output=True,  # Capture output to handle errors
+            text=True,
+        )
+        print(f"Network '{network_name}' deleted successfully.")
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to delete network: {e.stderr}")
+        raise e
+
 def create_docker_network(network_name: str) -> None:
     # Check if the Docker network already exists
     exists = (
@@ -71,16 +85,25 @@ def parse(cluster_configs: List[ClusterConfig]) -> List[Cluster]:
 
 
 def main() -> None:
-    # Create Docker network
-    create_docker_network(DOCKER_NETWORK_NAME)
-
     # Fetch configuration
     cfg = validate_config_file("examples/base.yaml")
     if cfg is None:
         exit(1)
 
-    # Create clusters
     clusters = parse(cfg.clusters)
+
+    # Cleanup
+    for cluster in clusters:
+        print(f"Cleaning up cluster: {cluster.name}")
+        cluster.cleanup()
+        print(f"Cluster {cluster.name} cleaned up successfully.")
+
+    delete_docker_network(DOCKER_NETWORK_NAME)
+
+    # Create Docker network
+    create_docker_network(DOCKER_NETWORK_NAME)
+
+    # Create clusters
     for cluster in clusters:
         print(f"Creating cluster: {cluster.name}")
         cluster.create()

@@ -14,6 +14,12 @@ from const import DOCKER_NETWORK_NAME
 class K3d(Cluster):
     IMAGE = "docker.io/rancher/k3s:v1.30.2-k3s2"  # TODO custom image
 
+    def cleanup(self) -> None:
+        subprocess.run(
+            ["k3d", "cluster", "delete", self.name],
+            check=True,
+        )
+
     def init_cluster(self) -> None:
         cluster_config = self._gen_config()
         cluster_config_yaml = yaml.dump(cluster_config)

@@ -28,6 +28,10 @@ class Cluster(ABC):
         self.init_cluster()
         self.install_cni()
 
+    @abstractmethod
+    def cleanup(self) -> None:
+        raise NotImplementedError("Subclasses must implement this method.")
+
     def get_kubeconfig_location(self) -> str:
         return f"out/kubeconfigs/{self.name}.yaml"
 
