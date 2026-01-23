@@ -1,0 +1,38 @@
+# Advanced Example with Defaults
+#
+# Demonstrates using the 'default' section to set common values across clusters.
+# Shows a multi-cluster setup with Liqo for testing complex multi-cluster scenarios.
+
+default:
+  runtime: "k3d"
+  cni: "calico"
+  nodes: 3  # Default: 3 nodes per cluster
+
+clusters:
+  - name: "production"
+    # Inherits defaults: k3d runtime, calico CNI, 3 nodes
+    cluster_cidr: "10.100.0.0/16"
+    service_cidr: "10.50.0.0/16"
+
+  - name: "staging"
+    # Inherits runtime and CNI, overrides nodes
+    nodes: 2
+    cluster_cidr: "10.101.0.0/16"
+    service_cidr: "10.51.0.0/16"
+
+  - name: "development"
+    # Override CNI to use Cilium instead
+    cni: "cilium"
+    nodes: 1
+    cluster_cidr: "10.102.0.0/16"
+    service_cidr: "10.52.0.0/16"
+
+tools:
+  liqo:
+    installations:
+      - cluster: "production"
+      - cluster: "staging"
+      - cluster: "development"
+    peerings:
+      - ["production", "staging"]
+      - ["staging", "development"]

@@ -1,3 +1,17 @@
+"""
+Kubernetes Testbench - Main Entry Point
+
+This module serves as the main entry point for the Kubernetes Testbench tool.
+It orchestrates the creation of virtual Kubernetes clusters, installation of CNI plugins,
+and deployment of additional tools like Liqo.
+
+The workflow is:
+1. Create a Docker network for cluster communication
+2. Parse and validate the configuration file
+3. Create configured clusters with selected runtimes
+4. Install CNI plugins in each cluster
+5. Install and configure additional tools
+"""
 import subprocess
 from typing import List
 
@@ -9,6 +23,18 @@ from const import DOCKER_NETWORK_NAME
 
 
 def create_docker_network(network_name: str) -> None:
+    """
+    Create a Docker network for cluster communication.
+    
+    This network allows multiple k3d clusters to communicate with each other,
+    which is essential for multi-cluster setups and tools like Liqo.
+    
+    Args:
+        network_name: Name of the Docker network to create
+        
+    Raises:
+        subprocess.CalledProcessError: If network creation fails
+    """
     # Check if the Docker network already exists
     exists = (
         subprocess.run(
@@ -39,11 +65,28 @@ def create_docker_network(network_name: str) -> None:
 
 
 def parse(cluster_configs: List[ClusterConfig]) -> List[Cluster]:
+    """
+    Parse cluster configurations and instantiate appropriate cluster objects.
+    
+    This function takes validated configuration data and creates concrete cluster
+    instances based on the specified runtime (e.g., k3d). This design allows for
+    easy extension to support additional runtimes in the future.
+    
+    Args:
+        cluster_configs: List of validated cluster configurations
+        
+    Returns:
+        List of instantiated Cluster objects ready for creation
+        
+    Raises:
+        ValueError: If an unsupported runtime is specified
+    """
     cls: List[Cluster] = []
 
     for cfg in cluster_configs:
         cluster: Cluster
 
+        # Match on runtime type and instantiate appropriate cluster class
         match cfg.runtime:
             case RuntimeEnum.k3d:
                 cluster = K3d(
@@ -62,22 +105,31 @@ def parse(cluster_configs: List[ClusterConfig]) -> List[Cluster]:
 
 
 def main() -> None:
-    # Create Docker network
+    """
+    Main execution function for Kubernetes Testbench.
+    
+    This function orchestrates the entire cluster creation and configuration process:
+    1. Creates a shared Docker network
+    2. Loads and validates configuration
+    3. Creates all specified clusters
+    4. Installs configured tools
+    """
+    # Create Docker network for cluster communication
     create_docker_network(DOCKER_NETWORK_NAME)
 
-    # Fetch configuration
+    # Fetch and validate configuration from YAML file
     cfg = validate_config_file("examples/base.yaml")
     if cfg is None:
         exit(1)
 
-    # Create clusters
+    # Create clusters based on configuration
     clusters = parse(cfg.clusters)
     for cluster in clusters:
         print(f"Creating cluster: {cluster.name}")
         cluster.create()
         print(f"Cluster {cluster.name} created successfully.")
 
-    # Install tools
+    # Install tools if configured
     tools = []
     if cfg.tools.liqo:
         tools.append(
