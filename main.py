@@ -1,5 +1,6 @@
 import subprocess
-from typing import List
+import sys
+from typing import List, Dict
 
 from config import validate_config_file, ClusterConfig, RuntimeEnum
 from clusters.base import Cluster
@@ -7,6 +8,7 @@ from clusters.k3d import K3d
 from clusters.kind import Kind
 from tools.liqo import LiqoTool
 from const import DOCKER_NETWORK_NAME
+from utils.kubernetes import create_kubernetes_namespace, create_deployment
 
 
 def delete_docker_network(network_name: str) -> None:
@@ -22,6 +24,7 @@ def delete_docker_network(network_name: str) -> None:
     except subprocess.CalledProcessError as e:
         print(f"Failed to delete network: {e.stderr}")
         raise e
+
 
 def create_docker_network(network_name: str) -> None:
     # Check if the Docker network already exists
@@ -53,8 +56,8 @@ def create_docker_network(network_name: str) -> None:
         raise e
 
 
-def parse(cluster_configs: List[ClusterConfig]) -> List[Cluster]:
-    cls: List[Cluster] = []
+def parse_clusters(cluster_configs: List[ClusterConfig]) -> Dict[str, Cluster]:
+    cls: Dict[str, Cluster] = {}
 
     for cfg in cluster_configs:
         cluster: Cluster
@@ -79,21 +82,21 @@ def parse(cluster_configs: List[ClusterConfig]) -> List[Cluster]:
             case _:
                 raise ValueError(f"Unsupported Runtime: {cfg.runtime}")
 
-        cls.append(cluster)
+        cls[cfg.name] = cluster
 
     return cls
 
 
-def main() -> None:
+def main(config_file: str) -> None:
     # Fetch configuration
-    cfg = validate_config_file("examples/base.yaml")
+    cfg = validate_config_file(config_file)
     if cfg is None:
         exit(1)
 
-    clusters = parse(cfg.clusters)
+    clusters = parse_clusters(cfg.clusters)
 
     # Cleanup
-    for cluster in clusters:
+    for cluster in clusters.values():
         print(f"Cleaning up cluster: {cluster.name}")
         cluster.cleanup()
         print(f"Cluster {cluster.name} cleaned up successfully.")
@@ -104,10 +107,31 @@ def main() -> None:
     create_docker_network(DOCKER_NETWORK_NAME)
 
     # Create clusters
-    for cluster in clusters:
+    for cluster in clusters.values():
         print(f"Creating cluster: {cluster.name}")
         cluster.create()
         print(f"Cluster {cluster.name} created successfully.")
+
+    # Create deployments
+    for cluster in cfg.clusters:
+        for namespace in cluster.namespaces:
+            print(f"Creating namespace: {namespace.name} in cluster: {cluster.name}")
+            create_kubernetes_namespace(
+                kubeconfig=clusters[cluster.name].get_kubeconfig_location(),
+                namespace_name=namespace.name,
+            )
+
+            for deployment in namespace.deployments:
+                print(
+                    f"Creating deployment: {deployment.name} in namespace: {namespace.name} of cluster: {cluster.name}"
+                )
+                create_deployment(
+                    kubeconfig_path=clusters[cluster.name].get_kubeconfig_location(),
+                    deployment_name=deployment.name,
+                    namespace=namespace.name,
+                    pod_spec=deployment.pod_spec,
+                    replicas=deployment.replicas,
+                )
 
     # Install tools
     tools = []
@@ -115,7 +139,7 @@ def main() -> None:
         tools.append(
             LiqoTool(
                 config=cfg.tools.liqo,
-                clusters={cluster.name: cluster for cluster in clusters},
+                clusters=clusters,
             )
         )
 
@@ -126,4 +150,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) != 2:
+        print("Usage: python main.py <config_file_path>")
+        sys.exit(1)
+
+    config_path = sys.argv[1]
+    main(config_path)

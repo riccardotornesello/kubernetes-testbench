@@ -39,6 +39,17 @@ class CommonConfig(BaseModel):
     service_cidr: str = "10.71.0.0/16"
 
 
+class DeploymentsConfig(BaseModel):
+    name: str
+    replicas: Optional[int] = 1
+    pod_spec: dict
+
+
+class NamespaceConfig(BaseModel):
+    name: str
+    deployments: Optional[List[DeploymentsConfig]] = Field(default_factory=list)
+
+
 class ClusterConfig(BaseModel):
     name: str
 
@@ -47,6 +58,8 @@ class ClusterConfig(BaseModel):
     nodes: Optional[int] = None
     cluster_cidr: Optional[str] = None
     service_cidr: Optional[str] = None
+
+    namespaces: Optional[List[NamespaceConfig]] = Field(default_factory=list)
 
 
 class RootConfig(BaseModel):
