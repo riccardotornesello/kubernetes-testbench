@@ -9,6 +9,7 @@ from cni.calico import Calico
 from cni.cilium import Cilium
 from config import CNIEnum
 from const import DOCKER_NETWORK_NAME
+from utils.cache import REGISTRY_PROXY_CA_VOLUME
 
 
 class K3d(Cluster):
@@ -91,7 +92,7 @@ class K3d(Cluster):
         return result.stdout
 
     def _gen_config(self) -> dict:
-        return {
+        conf = {
             "apiVersion": "k3d.io/v1alpha5",
             "kind": "Simple",
             "image": self.IMAGE,
@@ -125,7 +126,35 @@ class K3d(Cluster):
                     ],
                 }
             },
+            "env": [],
+            "volumes": [],
         }
+
+        if self.proxy_address is not None:
+            conf["env"].extend(
+                [
+                    {
+                        "envVar": f"HTTP_PROXY={self.proxy_address}",
+                        "nodeFilters": ["all"],
+                    },
+                    {
+                        "envVar": f"HTTPS_PROXY={self.proxy_address}",
+                        "nodeFilters": ["all"],
+                    },
+                    {
+                        "envVar": f"NO_PROXY='localhost,127.0.0.1,0.0.0.0,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.local,.svc",
+                        "nodeFilters": ["all"],
+                    },
+                ]
+            )
+            conf["volumes"].append(
+                {
+                    "volume": f"{REGISTRY_PROXY_CA_VOLUME}/ca.crt:/etc/ssl/certs/registry-proxy-ca.pem",
+                    "nodeFilters": ["all"],
+                }
+            )
+
+        return conf
 
     def get_api_server_address(self) -> str:
         kubeconfig_location = self.get_kubeconfig_location()

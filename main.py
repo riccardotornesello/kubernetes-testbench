@@ -1,4 +1,3 @@
-import subprocess
 import sys
 from typing import List, Dict
 
@@ -8,52 +7,9 @@ from clusters.k3d import K3d
 from clusters.kind import Kind
 from tools.liqo import LiqoTool
 from const import DOCKER_NETWORK_NAME
-from utils.kubernetes import create_kubernetes_namespace, create_deployment
-
-
-def delete_docker_network(network_name: str) -> None:
-    print(f"Deleting Docker network: {network_name}")
-    try:
-        subprocess.run(
-            ["docker", "network", "rm", network_name],
-            check=True,
-            capture_output=True,  # Capture output to handle errors
-            text=True,
-        )
-        print(f"Network '{network_name}' deleted successfully.")
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to delete network: {e.stderr}")
-        raise e
-
-
-def create_docker_network(network_name: str) -> None:
-    # Check if the Docker network already exists
-    exists = (
-        subprocess.run(
-            ["docker", "network", "inspect", network_name],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        ).returncode
-        == 0
-    )
-
-    if exists:
-        print(f"Docker network '{network_name}' already exists. Skipping.")
-        return
-
-    # If not, create it
-    print(f"Creating Docker network: {network_name}")
-    try:
-        subprocess.run(
-            ["docker", "network", "create", network_name],
-            check=True,
-            capture_output=True,  # Capture output to handle errors
-            text=True,
-        )
-        print(f"Network '{network_name}' created successfully.")
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to create network: {e.stderr}")
-        raise e
+from utils.kubernetes_utils import create_kubernetes_namespace, create_deployment
+from utils.docker_utils import ensure_docker_network
+from utils.cache import run_registry_proxy_container
 
 
 def parse_clusters(cluster_configs: List[ClusterConfig]) -> Dict[str, Cluster]:
@@ -101,10 +57,18 @@ def main(config_file: str) -> None:
         cluster.cleanup()
         print(f"Cluster {cluster.name} cleaned up successfully.")
 
-    delete_docker_network(DOCKER_NETWORK_NAME)
-
     # Create Docker network
-    create_docker_network(DOCKER_NETWORK_NAME)
+    ensure_docker_network(DOCKER_NETWORK_NAME)
+
+    # Setup cache if enabled
+    proxy_ip = None
+    if cfg.cache.enabled:
+        print("Setting up registry proxy cache...")
+        proxy_ip = run_registry_proxy_container()
+        print("Registry proxy cache set up successfully.")
+
+        for cluster in clusters.values():
+            cluster.set_proxy(proxy_ip)
 
     # Create clusters
     for cluster in clusters.values():

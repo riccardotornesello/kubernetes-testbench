@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "docker>=7.1.0",
     "kubernetes>=34.1.0",
     "pydantic>=2.12.5",
     "pyyaml>=6.0.3",

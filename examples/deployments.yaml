@@ -14,3 +14,21 @@ clusters:
                   image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
                   ports:
                     - containerPort: 80
+  - name: "milan"
+    runtime: "kind"
+    cni: "kindnet"
+    nodes: 2
+    namespaces:
+      - name: "test-namespace"
+        deployments:
+          - name: "nginx-deployment"
+            replicas: 3
+            pod_spec:
+              containers:
+                - name: "tester"
+                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
+                  ports:
+                    - containerPort: 80
+
+cache:
+  enabled: true

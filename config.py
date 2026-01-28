@@ -62,10 +62,15 @@ class ClusterConfig(BaseModel):
     namespaces: Optional[List[NamespaceConfig]] = Field(default_factory=list)
 
 
+class CacheConfig(BaseModel):
+    enabled: Optional[bool] = False
+
+
 class RootConfig(BaseModel):
     default: Optional[CommonConfig] = Field(default_factory=CommonConfig)
     clusters: List[ClusterConfig]
     tools: Optional[ToolsConfig] = Field(default_factory=ToolsConfig)
+    cache: Optional[CacheConfig] = Field(default_factory=CacheConfig)
 
     @model_validator(mode="after")
     def merge_defaults_into_clusters(self):
