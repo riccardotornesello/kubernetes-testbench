@@ -1,7 +1,7 @@
 import os
 
 from utils.docker_utils import ensure_docker_container
-from const import DOCKER_NETWORK_NAME
+from core.settings import DOCKER_NETWORK_NAME
 
 
 REGISTRY_PROXY_IMAGE = "rpardini/docker-registry-proxy:0.6.5"  # TODO: variable

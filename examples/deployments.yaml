@@ -1,8 +1,10 @@
 clusters:
   - name: "rome"
-    runtime: "k3d"
+    runtime:
+      type: "k3d"
     cni: "flannel"
     nodes: 2
+    cache: true
     namespaces:
       - name: "test-namespace"
         deployments:
@@ -15,9 +17,11 @@ clusters:
                   ports:
                     - containerPort: 80
   - name: "milan"
-    runtime: "kind"
+    runtime:
+      type: "kind"
     cni: "kindnet"
     nodes: 2
+    cache: true
     namespaces:
       - name: "test-namespace"
         deployments:
@@ -29,6 +33,3 @@ clusters:
                   image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
                   ports:
                     - containerPort: 80
-
-cache:
-  enabled: true

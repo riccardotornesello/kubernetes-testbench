@@ -2,7 +2,7 @@ from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
 
-def create_kubernetes_namespace(kubeconfig: str, namespace_name: str) -> bool:
+def ensure_kubernetes_namespace(kubeconfig: str, namespace_name: str) -> bool:
     k8s_client = config.new_client_from_config(config_file=kubeconfig)
     core_v1 = client.CoreV1Api(api_client=k8s_client)
 
@@ -21,7 +21,7 @@ def create_kubernetes_namespace(kubeconfig: str, namespace_name: str) -> bool:
             raise  # Rethrow other exceptions
 
 
-def create_deployment(
+def create_kubernetes_deployment(
     kubeconfig_path: str,
     deployment_name: str,
     namespace: str,
@@ -52,3 +52,41 @@ def create_deployment(
     )
 
     apps_v1.create_namespaced_deployment(namespace=namespace, body=deployment)
+
+
+def create_kubernetes_service(
+    kubeconfig_path: str,
+    service_name: str,
+    namespace: str,
+    service_spec: dict,
+):
+    k8s_client = config.new_client_from_config(config_file=kubeconfig_path)
+    core_v1 = client.CoreV1Api(api_client=k8s_client)
+
+    service = client.V1Service(
+        api_version="v1",
+        kind="Service",
+        metadata=client.V1ObjectMeta(name=service_name),
+        spec=service_spec,
+    )
+
+    core_v1.create_namespaced_service(namespace=namespace, body=service)
+
+
+def create_kubernetes_pod(
+    kubeconfig_path: str,
+    pod_name: str,
+    namespace: str,
+    pod_spec: dict,
+):
+    k8s_client = config.new_client_from_config(config_file=kubeconfig_path)
+    core_v1 = client.CoreV1Api(api_client=k8s_client)
+
+    pod = client.V1Pod(
+        api_version="v1",
+        kind="Pod",
+        metadata=client.V1ObjectMeta(name=pod_name),
+        spec=pod_spec,
+    )
+
+    core_v1.create_namespaced_pod(namespace=namespace, body=pod)

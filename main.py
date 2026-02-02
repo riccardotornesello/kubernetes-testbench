@@ -1,46 +1,49 @@
-import sys
-from typing import List, Dict
-
-from config import validate_config_file, ClusterConfig, RuntimeEnum
-from clusters.base import Cluster
-from clusters.k3d import K3d
-from clusters.kind import Kind
-from tools.liqo import LiqoTool
-from const import DOCKER_NETWORK_NAME
-from utils.kubernetes_utils import create_kubernetes_namespace, create_deployment
-from utils.docker_utils import ensure_docker_network
-from utils.cache import run_registry_proxy_container
+from core.input import validate_config_file, ClusterConfig, ToolConfig
+from core.modules import runtimes, cnis, tools, runtime_specs, tool_specs
+from core.types import Settings
+from core.namespaces import create_namespace
+from utils.kubeconfig import get_kubeconfig_location
+from core.cache import run_registry_proxy_container
 
 
-def parse_clusters(cluster_configs: List[ClusterConfig]) -> Dict[str, Cluster]:
-    cls: Dict[str, Cluster] = {}
+# TODO: single function to create settings
 
-    for cfg in cluster_configs:
-        cluster: Cluster
 
-        match cfg.runtime:
-            case RuntimeEnum.k3d:
-                cluster = K3d(
-                    name=cfg.name,
-                    nodes=cfg.nodes,
-                    cluster_cidr=cfg.cluster_cidr,
-                    service_cidr=cfg.service_cidr,
-                    cni=cfg.cni,
-                )
-            case RuntimeEnum.kind:
-                cluster = Kind(
-                    name=cfg.name,
-                    nodes=cfg.nodes,
-                    cluster_cidr=cfg.cluster_cidr,
-                    service_cidr=cfg.service_cidr,
-                    cni=cfg.cni,
-                )
-            case _:
-                raise ValueError(f"Unsupported Runtime: {cfg.runtime}")
+def create_runtime_instance(config: ClusterConfig):
+    return runtimes[config.runtime.type.value](
+        name=config.name,
+        settings=Settings(
+            runtime=config.runtime.type.value,
+            cni=config.cni.value,
+            name=config.name,
+            nodes=config.nodes,
+            cluster_cidr=config.cluster_cidr,
+            service_cidr=config.service_cidr,
+            cache=config.cache,
+        ),
+        spec=runtime_specs[config.runtime.type.value](**config.runtime.spec),
+    )
 
-        cls[cfg.name] = cluster
 
-    return cls
+def create_cni_instance(config: ClusterConfig):
+    return cnis[config.cni.value](
+        cluster_name=config.name,
+        settings=Settings(
+            runtime=config.runtime.type.value,
+            cni=config.cni.value,
+            name=config.name,
+            nodes=config.nodes,
+            cluster_cidr=config.cluster_cidr,
+            service_cidr=config.service_cidr,
+            cache=config.cache,
+        ),
+    )
+
+
+def create_tool_instance(tool_config: ToolConfig):
+    return tools[tool_config.type](
+        spec=tool_specs[tool_config.type](**tool_config.spec),
+    )
 
 
 def main(config_file: str) -> None:
@@ -49,74 +52,67 @@ def main(config_file: str) -> None:
     if cfg is None:
         exit(1)
 
-    clusters = parse_clusters(cfg.clusters)
+    tools = [create_tool_instance(tool_cfg) for tool_cfg in cfg.tools]
+    clusters = {
+        cluster_cfg.name: {
+            "runtime": create_runtime_instance(cluster_cfg),
+            "cni": create_cni_instance(cluster_cfg),
+        }
+        for cluster_cfg in cfg.clusters
+    }
 
-    # Cleanup
+    all_settings = {cluster_cfg.name: cluster_cfg for cluster_cfg in cfg.clusters}
+    all_runtimes = {cluster: clusters[cluster]["runtime"] for cluster in clusters}
+    all_cnis = {cluster: clusters[cluster]["cni"] for cluster in clusters}
+
     for cluster in clusters.values():
-        print(f"Cleaning up cluster: {cluster.name}")
-        cluster.cleanup()
-        print(f"Cluster {cluster.name} cleaned up successfully.")
+        cluster["runtime"].check_dependencies()
+        cluster["cni"].check_dependencies()
 
-    # Create Docker network
-    ensure_docker_network(DOCKER_NETWORK_NAME)
-
-    # Setup cache if enabled
-    proxy_ip = None
-    if cfg.cache.enabled:
-        print("Setting up registry proxy cache...")
-        proxy_ip = run_registry_proxy_container()
-        print("Registry proxy cache set up successfully.")
-
-        for cluster in clusters.values():
-            cluster.set_proxy(proxy_ip)
-
-    # Create clusters
     for cluster in clusters.values():
-        print(f"Creating cluster: {cluster.name}")
-        cluster.create()
-        print(f"Cluster {cluster.name} created successfully.")
+        cluster["runtime"].cleanup()
 
-    # Create deployments
-    for cluster in cfg.clusters:
-        for namespace in cluster.namespaces:
-            print(f"Creating namespace: {namespace.name} in cluster: {cluster.name}")
-            create_kubernetes_namespace(
-                kubeconfig=clusters[cluster.name].get_kubeconfig_location(),
-                namespace_name=namespace.name,
+    proxy_address = run_registry_proxy_container()  # TODO: only if needed
+
+    # TODO: create network
+
+    for cluster in clusters.values():
+        if cluster["runtime"].settings.cache:
+            cluster["runtime"].set_proxy(proxy_address)
+
+        for tool in tools:
+            tool.pre_cluster_init()
+
+        cluster["runtime"].init_cluster()
+        for tool in tools:
+            tool.post_cluster_init()
+
+        cluster["runtime"].install_cni(cluster["cni"])
+
+        for tool in tools:
+            tool.post_cni_install(
+                settings=cluster["runtime"].settings,
+                runtime=cluster["runtime"],
+                cni=cluster["cni"],
             )
-
-            for deployment in namespace.deployments:
-                print(
-                    f"Creating deployment: {deployment.name} in namespace: {namespace.name} of cluster: {cluster.name}"
-                )
-                create_deployment(
-                    kubeconfig_path=clusters[cluster.name].get_kubeconfig_location(),
-                    deployment_name=deployment.name,
-                    namespace=namespace.name,
-                    pod_spec=deployment.pod_spec,
-                    replicas=deployment.replicas,
-                )
-
-    # Install tools
-    tools = []
-    if cfg.tools.liqo:
-        tools.append(
-            LiqoTool(
-                config=cfg.tools.liqo,
-                clusters=clusters,
-            )
-        )
 
     for tool in tools:
-        print(f"Installing tool: {tool.__class__.__name__}")
-        tool.install()
-        print(f"Tool {tool.__class__.__name__} installed successfully.")
+        tool.after_all_operations(
+            all_settings=all_settings,
+            all_runtimes=all_runtimes,
+            all_cnis=all_cnis,
+        )
+
+    for cluster_cfg in cfg.clusters:
+        kubeconfig_path = get_kubeconfig_location(cluster_cfg.name)
+        for namespace_cfg in cluster_cfg.namespaces:
+            create_namespace(kubeconfig_path, namespace_cfg)
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python main.py <config_file_path>")
-        sys.exit(1)
+    import sys
 
-    config_path = sys.argv[1]
-    main(config_path)
+    if len(sys.argv) != 2:
+        print("Usage: python main.py <config_file>")
+        exit(1)
+    main(sys.argv[1])

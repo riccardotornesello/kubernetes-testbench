@@ -1,23 +1,27 @@
 import yaml
 import os
 import subprocess
+
 from kubernetes import config, client
+from pydantic import BaseModel
 
-from clusters.base import Cluster
-from cni.base import CNI
-from cni.calico import Calico
-from cni.cilium import Cilium
-from config import CNIEnum
-from const import DOCKER_NETWORK_NAME
-from utils.cache import REGISTRY_PROXY_CA_VOLUME
+from runtimes.base import BaseRuntime
+from core.settings import DOCKER_NETWORK_NAME
+from core.cache import REGISTRY_PROXY_CA_VOLUME
+from utils.kubeconfig import get_kubeconfig_location
 
 
-class K3d(Cluster):
-    IMAGE = "docker.io/rancher/k3s:v1.30.2-k3s2"  # TODO custom image
+class K3dRuntimeSpec(BaseModel):
+    image: str = "docker.io/rancher/k3s:v1.30.2-k3s2"
 
-    def cleanup(self) -> None:
+
+class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
+    SUPPORTED_CNIS = ["flannel"]
+    DEFAULT_CNI = "flannel"
+
+    def check_dependencies(self):
         subprocess.run(
-            ["k3d", "cluster", "delete", self.name],
+            ["k3d", "--version"],
             check=True,
         )
 
@@ -27,7 +31,9 @@ class K3d(Cluster):
 
         additional_args = []
 
-        if self.cni != CNIEnum.flannel:
+        # Disable flannel if another CNI is selected
+        # TODO: move to config generation
+        if self.settings.cni != self.DEFAULT_CNI:
             additional_args.extend(
                 [
                     "--k3s-arg",
@@ -55,32 +61,17 @@ class K3d(Cluster):
 
         # Save kubeconfig content
         kubeconfig_content = self._get_kubeconfig_content()
-        kubeconfig_location = self.get_kubeconfig_location()
+        kubeconfig_location = get_kubeconfig_location(self.name)
 
         os.makedirs(os.path.dirname(kubeconfig_location), exist_ok=True)
-
         with open(kubeconfig_location, "w") as f:
             f.write(kubeconfig_content)
 
-    def install_cni(self) -> None:
-        kubeconfig_location = self.get_kubeconfig_location()
-
-        # Install the selected CNI plugin
-        cni: CNI | None = None
-
-        match self.cni:
-            case CNIEnum.calico:
-                cni = Calico(kubeconfig=kubeconfig_location, cidr=self.cluster_cidr)
-            case CNIEnum.cilium:
-                cni = Cilium(kubeconfig=kubeconfig_location, cidr=self.cluster_cidr)
-            case CNIEnum.flannel:
-                # Skip installation as flannel is default
-                pass
-            case _:
-                raise ValueError(f"Unsupported CNI: {self.cni}")
-
-        if cni is not None:
-            cni.install()
+    def cleanup(self) -> None:
+        subprocess.run(
+            ["k3d", "cluster", "delete", self.name],
+            check=True,
+        )
 
     def _get_kubeconfig_content(self) -> str:
         result = subprocess.run(
@@ -95,19 +86,19 @@ class K3d(Cluster):
         conf = {
             "apiVersion": "k3d.io/v1alpha5",
             "kind": "Simple",
-            "image": self.IMAGE,
+            "image": self.spec.image,
             "servers": 1,
-            "agents": self.nodes - 1,
+            "agents": self.settings.nodes - 1,
             "network": DOCKER_NETWORK_NAME,
             "options": {
                 "k3s": {
                     "extraArgs": [
                         {
-                            "arg": f"--cluster-cidr={self.cluster_cidr}",
+                            "arg": f"--cluster-cidr={self.settings.cluster_cidr}",
                             "nodeFilters": ["server:*"],
                         },
                         {
-                            "arg": f"--service-cidr={self.service_cidr}",
+                            "arg": f"--service-cidr={self.settings.service_cidr}",
                             "nodeFilters": ["server:*"],
                         },
                     ],
@@ -121,7 +112,7 @@ class K3d(Cluster):
                                 "label": f"tier=worker-{i}",
                                 "nodeFilters": [f"agent:{i - 1}"],
                             }
-                            for i in range(1, self.nodes)
+                            for i in range(1, self.settings.nodes)
                         ],
                     ],
                 }
@@ -142,7 +133,7 @@ class K3d(Cluster):
                         "nodeFilters": ["all"],
                     },
                     {
-                        "envVar": f"NO_PROXY='localhost,127.0.0.1,0.0.0.0,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.local,.svc",
+                        "envVar": f"NO_PROXY='localhost,127.0.0.1,0.0.0.0,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.local,.svc",  # TODO: check escape
                         "nodeFilters": ["all"],
                     },
                 ]
@@ -157,7 +148,7 @@ class K3d(Cluster):
         return conf
 
     def get_api_server_address(self) -> str:
-        kubeconfig_location = self.get_kubeconfig_location()
+        kubeconfig_location = get_kubeconfig_location(self.name)
         k8s_client = config.new_client_from_config(config_file=kubeconfig_location)
         v1 = client.CoreV1Api(k8s_client)
 
@@ -170,3 +161,7 @@ class K3d(Cluster):
                     return addr.address
 
         raise RuntimeError("API server address not found")
+
+
+module = K3dRuntime
+spec = K3dRuntimeSpec

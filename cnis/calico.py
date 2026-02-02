@@ -2,23 +2,21 @@ import tempfile
 import requests
 from kubernetes import utils, config, client
 
-from cni.base import CNI
+from cnis.base import BaseCNI
+from utils.kubeconfig import get_kubeconfig_location
 
 
-class Calico(CNI):
-    version: str
+class CalicoCNI(BaseCNI):
+    VERSION = "3.30.3"  # TODO: move to spec
 
-    def __init__(self, version: str = "3.30.3", **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.version = version
-
-    def install(self) -> None:
-        k8s_client = config.new_client_from_config(config_file=self.kubeconfig)
+    def install_cni(self) -> None:
+        kubeconfig_location = get_kubeconfig_location(self.cluster_name)
+        k8s_client = config.new_client_from_config(config_file=kubeconfig_location)
 
         # Save manifests to temp files and apply them
         for url in [
-            f"https://raw.githubusercontent.com/projectcalico/calico/v{self.version}/manifests/operator-crds.yaml",
-            f"https://raw.githubusercontent.com/projectcalico/calico/v{self.version}/manifests/tigera-operator.yaml",
+            f"https://raw.githubusercontent.com/projectcalico/calico/v{self.VERSION}/manifests/operator-crds.yaml",
+            f"https://raw.githubusercontent.com/projectcalico/calico/v{self.VERSION}/manifests/tigera-operator.yaml",
         ]:
             with tempfile.NamedTemporaryFile() as temp_crds:
                 response = requests.get(url)
@@ -52,7 +50,7 @@ class Calico(CNI):
                             {
                                 "name": "default-ipv4-ippool",
                                 "blockSize": 26,
-                                "cidr": self.cidr,
+                                "cidr": self.settings.cluster_cidr,
                                 "encapsulation": "VXLAN",
                                 "natOutgoing": "Enabled",
                                 "nodeSelector": "all()",
@@ -78,3 +76,6 @@ class Calico(CNI):
                 "metadata": {"name": "default"},
             },
         ]
+
+
+module = CalicoCNI

@@ -1,56 +1,79 @@
 import subprocess
-from typing import Dict
+from typing import Type, List, Optional, Tuple, Dict
 
-from clusters.kind import Kind
-from config import LiqoConfig
-from tools.base import Tool
-from clusters.k3d import K3d
-from clusters.base import Cluster
+from pydantic import BaseModel, Field
+
+from core.types import Settings
+from tools.base import BaseTool
+from runtimes.base import BaseRuntime
+from cnis.base import BaseCNI
+from utils.kubeconfig import get_kubeconfig_location
 
 
-class LiqoTool(Tool):
-    config: LiqoConfig
-    clusters: Dict[str, Cluster]
+class LiqoInstallationConfig(BaseModel):
+    cluster: str
+    version: Optional[str] = None
 
-    def __init__(self, config: LiqoConfig, clusters: Dict[str, Cluster]) -> None:
-        self.config = config
-        self.clusters = clusters
 
-    def install(self) -> None:
-        for installation in self.config.installations:
-            cluster = self.clusters[installation.cluster]
+class LiqoToolSpec(BaseModel):
+    installations: List[LiqoInstallationConfig] = Field(default_factory=list)
+    peerings: List[Tuple[str, str]] = Field(default_factory=list)
 
-            if isinstance(cluster, K3d):
-                self._install_in_cluster(
+
+class LiqoTool(BaseTool[LiqoToolSpec]):
+    def pre_cluster_init(self) -> None:
+        # TODO: check if the clusters are supported
+        pass
+
+    def post_cni_install(
+        self, settings: Settings, runtime: BaseRuntime, cni: BaseCNI
+    ) -> None:
+        cluster_installation = next(
+            (inst for inst in self.spec.installations if inst.cluster == runtime.name),
+            None,
+        )
+        if cluster_installation is None:
+            return
+
+        match settings.runtime:
+            case "k3d":
+                return self._install_in_cluster(
                     runtime="k3s",
-                    cluster_id=cluster.name,
-                    kubeconfig=cluster.get_kubeconfig_location(),
-                    version=installation.version,
-                    api_server_url=f"https://{cluster.get_api_server_address()}:6443",
-                    pod_cidr=cluster.cluster_cidr,
-                    service_cidr=cluster.service_cidr,
+                    cluster_id=settings.name,
+                    kubeconfig=get_kubeconfig_location(runtime.name),
+                    version=cluster_installation.version,
+                    api_server_url=f"https://{runtime.get_api_server_address()}:6443",
+                    pod_cidr=settings.cluster_cidr,
+                    service_cidr=settings.service_cidr,
                 )
-            elif isinstance(cluster, Kind):
-                self._install_in_cluster(
+            case "kind":
+                return self._install_in_cluster(
                     runtime="kind",
-                    cluster_id=cluster.name,
-                    kubeconfig=cluster.get_kubeconfig_location(),
-                    version=installation.version,
+                    cluster_id=settings.name,
+                    kubeconfig=get_kubeconfig_location(runtime.name),
+                    version=cluster_installation.version,
                 )
-            else:
+            case _:
                 raise ValueError(
-                    f"Liqo installation is not supported for cluster: {cluster.name}"
+                    f"Liqo post CNI install is not supported for runtime: {settings.runtime}"
                 )
 
-        for peering in self.config.peerings:
-            cluster_a = self.clusters[peering[0]]
-            cluster_b = self.clusters[peering[1]]
+    def after_all_operations(
+        self,
+        all_settings: Dict[str, Settings],
+        all_runtimes: Dict[str, Type[BaseRuntime]],
+        all_cnis: Dict[str, Type[BaseCNI]],
+    ) -> None:
+        for peering in self.spec.peerings:
+            cluster_a = all_settings[peering[0]]
+            cluster_b = all_settings[peering[1]]
 
+            # TODO: improve support for different runtimes
             self._peer_clusters(
-                kubeconfig=cluster_a.get_kubeconfig_location(),
-                remote_kubeconfig=cluster_b.get_kubeconfig_location(),
+                kubeconfig=get_kubeconfig_location(cluster_a.name),
+                remote_kubeconfig=get_kubeconfig_location(cluster_b.name),
                 gw_server_service_type="LoadBalancer"
-                if isinstance(cluster_b, K3d)
+                if cluster_b.runtime == "k3d"
                 else "NodePort",
             )
 
@@ -123,3 +146,7 @@ class LiqoTool(Tool):
 
         # Execute peering command
         subprocess.run(command, check=True)
+
+
+module = LiqoTool
+spec = LiqoToolSpec

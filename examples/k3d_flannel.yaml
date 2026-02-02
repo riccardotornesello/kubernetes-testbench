@@ -1,0 +1,20 @@
+default:
+  runtime:
+    type: "k3d"
+  cni: "flannel"
+  nodes: 2
+  cluster_cidr: "10.200.0.0/16"
+  service_cidr: "10.71.0.0/16"
+
+clusters:
+  - name: "rome"
+  - name: "milan"
+
+tools:
+  - type: "liqo"
+    spec:
+      installations:
+        - cluster: "rome"
+        - cluster: "milan"
+      peerings:
+        - ["rome", "milan"]
