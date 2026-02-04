@@ -8,3 +8,4 @@
 - Improve the hooks system, add more hooks (after_namespace_creation, after_deployment_creation, etc.)
 - Check why the cluster does not start without specifying the cidr in the config file
 - Ask before deleting the clusters, maybe with a --force flag to skip the confirmation
+- The default input should just be spread to the clusters spec, without validation

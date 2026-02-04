@@ -12,24 +12,41 @@ clusters:
     namespaces:
       - name: "nc"
         pods:
-          - name: "pc"
+          - name: "pc1"
             spec:
               containers:
                 - name: "tester"
                   image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
                   imagePullPolicy: IfNotPresent
-      - name: "no"
-        pods:
-          - name: "poc"
+              nodeSelector:
+                tier: worker-0
+          - name: "pc2"
             spec:
               containers:
                 - name: "tester"
                   image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
                   imagePullPolicy: IfNotPresent
-                      affinity:
               nodeSelector:
                 tier: worker-1
-          - name: "pop"
+      - name: "no"
+        pods:
+          - name: "poc1"
+            spec:
+              containers:
+                - name: "tester"
+                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
+                  imagePullPolicy: IfNotPresent
+              nodeSelector:
+                tier: worker-0
+          - name: "poc2"
+            spec:
+              containers:
+                - name: "tester"
+                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
+                  imagePullPolicy: IfNotPresent
+              nodeSelector:
+                tier: worker-1
+          - name: "pop1"
             spec:
               containers:
                 - name: "tester"
@@ -37,32 +54,35 @@ clusters:
                   imagePullPolicy: IfNotPresent
               nodeSelector:
                 liqo.io/remote-cluster-id: milan
-        services:
-          - name: "soc"
-            spec:
-              ports:
-                - port: 80
-                  targetPort: 80
-              selector:
-                kubernetes.io/metadata.name: "poc"
-          - name: "sop"
-            spec:
-              ports:
-                - port: 80
-                  targetPort: 80
-              selector:
-                kubernetes.io/metadata.name: "pop"
-  - name: "milan"
-    cache: true
-    namespaces:
-      - name: "np"
-        pods:
-          - name: "pp"
+          - name: "pop2"
             spec:
               containers:
                 - name: "tester"
                   image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
                   imagePullPolicy: IfNotPresent
+              nodeSelector:
+                liqo.io/remote-cluster-id: milan
+  - name: "milan"
+    cache: true
+    namespaces:
+      - name: "np"
+        pods:
+          - name: "pp1"
+            spec:
+              containers:
+                - name: "tester"
+                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
+                  imagePullPolicy: IfNotPresent
+              nodeSelector:
+                tier: worker-0
+          - name: "pp2"
+            spec:
+              containers:
+                - name: "tester"
+                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
+                  imagePullPolicy: IfNotPresent
+              nodeSelector:
+                tier: worker-1
 
 tools:
   - type: "liqo"

@@ -86,7 +86,7 @@ class KindCluster(BaseRuntime[KindClusterSpec]):
                     node,
                     "sh",
                     "-c",
-                    f"curl {self.proxy_address}/setup/systemd | sed s/docker\.service/containerd\.service/g | sed '/Environment/ s/$/ \"NO_PROXY=ttl.sh,127.0.0.0\/8,10.0.0.0\/8,172.16.0.0\/12,192.168.0.0\/16\"/' | bash",  # TODO: check escape
+                    f"curl {self.proxy_address}/setup/systemd | sed s/docker\\.service/containerd\\.service/g | sed '/Environment/ s/$/ \"NO_PROXY=ttl.sh,storage.googleapis.com,127.0.0.0\\/8,10.0.0.0\\/8,172.16.0.0\\/12,192.168.0.0\\/16\"/' | bash",
                 ],
                 check=True,
             )
