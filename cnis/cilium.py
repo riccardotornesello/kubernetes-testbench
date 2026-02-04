@@ -1,5 +1,6 @@
 import subprocess
 import yaml
+import tempfile
 
 from cnis.base import BaseCNI
 from utils.kubeconfig import get_kubeconfig_location
@@ -23,21 +24,25 @@ class CiliumCNI(BaseCNI):
     def install_cni(self) -> None:
         kubeconfig_location = get_kubeconfig_location(self.cluster_name)
 
-        command = [
-            "cilium",
-            "install",
-            "--kubeconfig",
-            kubeconfig_location,
-            "--version",
-            self.VERSION,
-            "--values",
-            "-",
-        ]
-        subprocess.run(
-            command,
-            input=yaml.dump(self._gen_config()).encode(),
-            check=True,
-        )
+        with tempfile.NamedTemporaryFile(mode="w") as tmp:
+            # Dump the generated configuration to a temporary file
+            yaml.dump(self._gen_config(), tmp)
+            tmp.flush()  # Ensure data is written to disk
+
+            command = [
+                "cilium",
+                "install",
+                "--kubeconfig",
+                kubeconfig_location,
+                "--version",
+                self.VERSION,
+                "--values",
+                tmp.name,
+            ]
+            subprocess.run(
+                command,
+                check=True,
+            )
 
     def _gen_config(self) -> list[dict]:
         return {

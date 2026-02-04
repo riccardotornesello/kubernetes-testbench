@@ -8,11 +8,13 @@ from tools.base import BaseTool
 from runtimes.base import BaseRuntime
 from cnis.base import BaseCNI
 from utils.kubeconfig import get_kubeconfig_location
+from utils.kubernetes_utils import ensure_kubernetes_namespace
 
 
 class LiqoInstallationConfig(BaseModel):
     cluster: str
     version: Optional[str] = None
+    offloadings: List[str] = Field(default_factory=list)
 
 
 class LiqoToolSpec(BaseModel):
@@ -21,6 +23,8 @@ class LiqoToolSpec(BaseModel):
 
 
 class LiqoTool(BaseTool[LiqoToolSpec]):
+    # TODO: check dependencies
+
     def pre_cluster_init(self) -> None:
         # TODO: check if the clusters are supported
         pass
@@ -68,7 +72,7 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
             cluster_a = all_settings[peering[0]]
             cluster_b = all_settings[peering[1]]
 
-            # TODO: improve support for different runtimes
+            # TODO: improve support for different runtimes: replace the check on "k3d" with a property on the runtime
             self._peer_clusters(
                 kubeconfig=get_kubeconfig_location(cluster_a.name),
                 remote_kubeconfig=get_kubeconfig_location(cluster_b.name),
@@ -76,6 +80,13 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
                 if cluster_b.runtime == "k3d"
                 else "NodePort",
             )
+
+        for installation in self.spec.installations:
+            for namespace in installation.offloadings:
+                self._offload_namespace(
+                    kubeconfig=get_kubeconfig_location(installation.cluster),
+                    namespace=namespace,
+                )
 
     def _install_in_cluster(
         self,
@@ -145,6 +156,21 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
                 command.extend([param, value])
 
         # Execute peering command
+        subprocess.run(command, check=True)
+
+    def _offload_namespace(self, kubeconfig: str, namespace: str) -> None:
+        # Create the namespace if it does not exist
+        ensure_kubernetes_namespace(kubeconfig, namespace)
+
+        # Run liqoctl offload namespace command
+        command = [
+            "liqoctl",
+            "offload",
+            "namespace",
+            namespace,
+            "--kubeconfig",
+            kubeconfig,
+        ]
         subprocess.run(command, check=True)
 
 

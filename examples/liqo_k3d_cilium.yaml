@@ -1,0 +1,75 @@
+default:
+  runtime:
+    type: "k3d"
+  cni: "cilium"
+  nodes: 2
+  cluster_cidr: "10.200.0.0/16"
+  service_cidr: "10.71.0.0/16"
+
+clusters:
+  - name: "rome"
+    cache: true
+    namespaces:
+      - name: "nc"
+        pods:
+          - name: "pc"
+            spec:
+              containers:
+                - name: "tester"
+                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
+                  imagePullPolicy: IfNotPresent
+      - name: "no"
+        pods:
+          - name: "poc"
+            spec:
+              containers:
+                - name: "tester"
+                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
+                  imagePullPolicy: IfNotPresent
+                      affinity:
+              nodeSelector:
+                tier: worker-1
+          - name: "pop"
+            spec:
+              containers:
+                - name: "tester"
+                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
+                  imagePullPolicy: IfNotPresent
+              nodeSelector:
+                liqo.io/remote-cluster-id: milan
+        services:
+          - name: "soc"
+            spec:
+              ports:
+                - port: 80
+                  targetPort: 80
+              selector:
+                kubernetes.io/metadata.name: "poc"
+          - name: "sop"
+            spec:
+              ports:
+                - port: 80
+                  targetPort: 80
+              selector:
+                kubernetes.io/metadata.name: "pop"
+  - name: "milan"
+    cache: true
+    namespaces:
+      - name: "np"
+        pods:
+          - name: "pp"
+            spec:
+              containers:
+                - name: "tester"
+                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
+                  imagePullPolicy: IfNotPresent
+
+tools:
+  - type: "liqo"
+    spec:
+      installations:
+        - cluster: "rome"
+          offloadings: ["no"]
+        - cluster: "milan"
+      peerings:
+        - ["rome", "milan"]

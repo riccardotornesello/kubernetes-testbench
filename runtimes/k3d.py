@@ -16,7 +16,7 @@ class K3dRuntimeSpec(BaseModel):
 
 
 class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
-    SUPPORTED_CNIS = ["flannel"]
+    SUPPORTED_CNIS = ["flannel", "cilium", "calico"]
     DEFAULT_CNI = "flannel"
 
     def check_dependencies(self):
@@ -133,7 +133,7 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
                         "nodeFilters": ["all"],
                     },
                     {
-                        "envVar": f"NO_PROXY='localhost,127.0.0.1,0.0.0.0,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.local,.svc",  # TODO: check escape
+                        "envVar": f"NO_PROXY='ttl.sh,localhost,127.0.0.1,0.0.0.0,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.local,.svc",  # TODO: check escape
                         "nodeFilters": ["all"],
                     },
                 ]

@@ -1,0 +1,125 @@
+default:
+  cluster_cidr: "10.200.0.0/16"
+  service_cidr: "10.71.0.0/16"
+
+clusters:
+  - name: "rome"
+    runtime:
+      type: "k3d"
+    cni: "flannel"
+    nodes: 2
+    cache: true
+    namespaces:
+      - name: "rome-local"
+        deployments:
+          - name: "rome-local-deployment"
+            replicas: 2
+            pod_spec:
+              containers:
+                - name: "tester"
+                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
+                  imagePullPolicy: IfNotPresent
+                  ports:
+                    - containerPort: 80
+      - name: "rome-offloaded"
+        pods:
+          - name: "rome-offloaded-rome"
+            spec:
+              containers:
+                - name: "tester"
+                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
+                  imagePullPolicy: IfNotPresent
+                  ports:
+                    - containerPort: 80
+                      affinity:
+              nodeSelector:
+                tier: worker-1
+          - name: "rome-offloaded-milan"
+            spec:
+              containers:
+                - name: "tester"
+                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
+                  imagePullPolicy: IfNotPresent
+                  ports:
+                    - containerPort: 80
+              nodeSelector:
+                liqo.io/remote-cluster-id: milan
+          - name: "rome-offloaded-venice"
+            spec:
+              containers:
+                - name: "tester"
+                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
+                  imagePullPolicy: IfNotPresent
+                  ports:
+                    - containerPort: 80
+              nodeSelector:
+                liqo.io/remote-cluster-id: venice
+        services:
+          - name: "rome-offloaded-rome"
+            spec:
+              ports:
+                - port: 80
+                  targetPort: 80
+              selector:
+                kubernetes.io/metadata.name: "rome-offloaded-rome"
+          - name: "rome-offloaded-milan"
+            spec:
+              ports:
+                - port: 80
+                  targetPort: 80
+              selector:
+                kubernetes.io/metadata.name: "rome-offloaded-milan"
+          - name: "rome-offloaded-venice"
+            spec:
+              ports:
+                - port: 80
+                  targetPort: 80
+              selector:
+                kubernetes.io/metadata.name: "rome-offloaded-venice"
+  - name: "milan"
+    runtime:
+      type: "k3d"
+    cni: "flannel"
+    nodes: 2
+    cache: true
+    namespaces:
+      - name: "milan-local"
+        deployments:
+          - name: "milan-local-deployment"
+            replicas: 2
+            pod_spec:
+              containers:
+                - name: "tester"
+                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
+                  imagePullPolicy: IfNotPresent
+                  ports:
+                    - containerPort: 80
+  - name: "venice"
+    runtime:
+      type: "k3d"
+    cni: "flannel"
+    nodes: 2
+    cache: true
+    namespaces:
+      - name: "venice-local"
+        deployments:
+          - name: "venice-local-deployment"
+            replicas: 2
+            pod_spec:
+              containers:
+                - name: "tester"
+                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
+                  imagePullPolicy: IfNotPresent
+                  ports:
+                    - containerPort: 80
+tools:
+  - type: "liqo"
+    spec:
+      installations:
+        - cluster: "rome"
+          offloadings: ["rome-offloaded"]
+        - cluster: "milan"
+        - cluster: "venice"
+      peerings:
+        - ["rome", "milan"]
+        - ["rome", "venice"]
