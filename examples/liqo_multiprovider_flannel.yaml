@@ -1,123 +1,130 @@
 default:
+  runtime:
+    type: "k3d"
+  cni: "flannel"
+  nodes: 2
   cluster_cidr: "10.200.0.0/16"
   service_cidr: "10.71.0.0/16"
 
 clusters:
   - name: "rome"
-    runtime:
-      type: "k3d"
-    cni: "flannel"
-    nodes: 2
     cache: true
     namespaces:
-      - name: "rome-local"
-        deployments:
-          - name: "rome-local-deployment"
-            replicas: 2
-            pod_spec:
-              containers:
-                - name: "tester"
-                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
-                  imagePullPolicy: IfNotPresent
-                  ports:
-                    - containerPort: 80
-      - name: "rome-offloaded"
+      - name: "nlr"
         pods:
-          - name: "rome-offloaded-rome"
+          - name: "plr"
             spec:
               containers:
                 - name: "tester"
                   image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
                   imagePullPolicy: IfNotPresent
-                  ports:
-                    - containerPort: 80
-                      affinity:
+        services:
+          - name: "slr"
+            spec:
+              selector:
+                app: plr
+              ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: 80
+      - name: "no"
+        pods:
+          - name: "por"
+            spec:
+              containers:
+                - name: "tester"
+                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
+                  imagePullPolicy: IfNotPresent
               nodeSelector:
-                tier: worker-1
-          - name: "rome-offloaded-milan"
+                tier: worker-0
+          - name: "pom"
             spec:
               containers:
                 - name: "tester"
                   image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
                   imagePullPolicy: IfNotPresent
-                  ports:
-                    - containerPort: 80
               nodeSelector:
                 liqo.io/remote-cluster-id: milan
-          - name: "rome-offloaded-venice"
+          - name: "pov"
             spec:
               containers:
                 - name: "tester"
                   image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
                   imagePullPolicy: IfNotPresent
-                  ports:
-                    - containerPort: 80
               nodeSelector:
                 liqo.io/remote-cluster-id: venice
         services:
-          - name: "rome-offloaded-rome"
+          - name: "sor"
             spec:
-              ports:
-                - port: 80
-                  targetPort: 80
               selector:
-                kubernetes.io/metadata.name: "rome-offloaded-rome"
-          - name: "rome-offloaded-milan"
+                app: por
+              ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: 80
+          - name: "som"
             spec:
-              ports:
-                - port: 80
-                  targetPort: 80
               selector:
-                kubernetes.io/metadata.name: "rome-offloaded-milan"
-          - name: "rome-offloaded-venice"
+                app: pom
+              ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: 80
+          - name: "sov"
             spec:
-              ports:
-                - port: 80
-                  targetPort: 80
               selector:
-                kubernetes.io/metadata.name: "rome-offloaded-venice"
+                app: pov
+              ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: 80
   - name: "milan"
-    runtime:
-      type: "k3d"
-    cni: "flannel"
-    nodes: 2
     cache: true
     namespaces:
-      - name: "milan-local"
-        deployments:
-          - name: "milan-local-deployment"
-            replicas: 2
-            pod_spec:
+      - name: "nlm"
+        pods:
+          - name: "plm"
+            spec:
               containers:
                 - name: "tester"
                   image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
                   imagePullPolicy: IfNotPresent
-                  ports:
-                    - containerPort: 80
+        services:
+          - name: "slm"
+            spec:
+              selector:
+                app: plm
+              ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: 80
   - name: "venice"
-    runtime:
-      type: "k3d"
-    cni: "flannel"
-    nodes: 2
     cache: true
     namespaces:
-      - name: "venice-local"
-        deployments:
-          - name: "venice-local-deployment"
-            replicas: 2
-            pod_spec:
+      - name: "nlv"
+        pods:
+          - name: "plv"
+            spec:
               containers:
                 - name: "tester"
                   image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
                   imagePullPolicy: IfNotPresent
-                  ports:
-                    - containerPort: 80
+        services:
+          - name: "slv"
+            spec:
+              selector:
+                app: plv
+              ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: 80
+
 tools:
   - type: "liqo"
     spec:
       installations:
         - cluster: "rome"
-          offloadings: ["rome-offloaded"]
+          offloadings: ["no"]
         - cluster: "milan"
         - cluster: "venice"
       peerings:

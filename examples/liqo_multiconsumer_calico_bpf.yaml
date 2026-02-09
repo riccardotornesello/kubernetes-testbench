@@ -1,7 +1,7 @@
 default:
   runtime:
     type: "k3d"
-  cni: "calico"
+  cni: "calico_bpf"
   nodes: 2
   cluster_cidr: "10.200.0.0/16"
   service_cidr: "10.71.0.0/16"
@@ -12,42 +12,24 @@ clusters:
     namespaces:
       - name: "nlr"
         pods:
-          - name: "plr1"
+          - name: "plr"
             spec:
               containers:
                 - name: "tester"
                   image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
                   imagePullPolicy: IfNotPresent
-              nodeSelector:
-                tier: worker-0
-          - name: "plr2"
-            spec:
-              containers:
-                - name: "tester"
-                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
-                  imagePullPolicy: IfNotPresent
-              nodeSelector:
-                tier: worker-1
         services:
-          - name: "slr1"
+          - name: "slr"
             spec:
               selector:
-                app: plr1
-              ports:
-                - protocol: TCP
-                  port: 80
-                  targetPort: 80
-          - name: "slr2"
-            spec:
-              selector:
-                app: plr2
+                app: plr
               ports:
                 - protocol: TCP
                   port: 80
                   targetPort: 80
       - name: "nor"
         pods:
-          - name: "porc1"
+          - name: "porc"
             spec:
               containers:
                 - name: "tester"
@@ -55,23 +37,7 @@ clusters:
                   imagePullPolicy: IfNotPresent
               nodeSelector:
                 tier: worker-0
-          - name: "porc2"
-            spec:
-              containers:
-                - name: "tester"
-                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
-                  imagePullPolicy: IfNotPresent
-              nodeSelector:
-                tier: worker-1
-          - name: "porp1"
-            spec:
-              containers:
-                - name: "tester"
-                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
-                  imagePullPolicy: IfNotPresent
-              nodeSelector:
-                liqo.io/remote-cluster-id: milan
-          - name: "porp2"
+          - name: "porp"
             spec:
               containers:
                 - name: "tester"
@@ -80,34 +46,18 @@ clusters:
               nodeSelector:
                 liqo.io/remote-cluster-id: milan
         services:
-          - name: "sorc1"
+          - name: "sorc"
             spec:
               selector:
-                app: porc1
+                app: porc
               ports:
                 - protocol: TCP
                   port: 80
                   targetPort: 80
-          - name: "sorc2"
+          - name: "sorp"
             spec:
               selector:
-                app: porc2
-              ports:
-                - protocol: TCP
-                  port: 80
-                  targetPort: 80
-          - name: "sorp1"
-            spec:
-              selector:
-                app: porp1
-              ports:
-                - protocol: TCP
-                  port: 80
-                  targetPort: 80
-          - name: "sorp2"
-            spec:
-              selector:
-                app: porp2
+                app: porp
               ports:
                 - protocol: TCP
                   port: 80
@@ -117,7 +67,44 @@ clusters:
     namespaces:
       - name: "nlm"
         pods:
-          - name: "plm1"
+          - name: "plm"
+            spec:
+              containers:
+                - name: "tester"
+                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
+                  imagePullPolicy: IfNotPresent
+        services:
+          - name: "slm"
+            spec:
+              selector:
+                app: plm
+              ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: 80
+  - name: "venice"
+    cache: true
+    namespaces:
+      - name: "nlv"
+        pods:
+          - name: "plv"
+            spec:
+              containers:
+                - name: "tester"
+                  image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
+                  imagePullPolicy: IfNotPresent
+        services:
+          - name: "slv"
+            spec:
+              selector:
+                app: plv
+              ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: 80
+      - name: "nov"
+        pods:
+          - name: "povc"
             spec:
               containers:
                 - name: "tester"
@@ -125,27 +112,27 @@ clusters:
                   imagePullPolicy: IfNotPresent
               nodeSelector:
                 tier: worker-0
-          - name: "plm2"
+          - name: "povp"
             spec:
               containers:
                 - name: "tester"
                   image: "riccardotornesello/hello-world-http-server:v2.1.0-tester"
                   imagePullPolicy: IfNotPresent
               nodeSelector:
-                tier: worker-1
+                liqo.io/remote-cluster-id: milan
         services:
-          - name: "slm1"
+          - name: "sovc"
             spec:
               selector:
-                app: plm1
+                app: povc
               ports:
                 - protocol: TCP
                   port: 80
                   targetPort: 80
-          - name: "slm2"
+          - name: "sovp"
             spec:
               selector:
-                app: plm2
+                app: povp
               ports:
                 - protocol: TCP
                   port: 80
@@ -158,5 +145,8 @@ tools:
         - cluster: "rome"
           offloadings: ["nor"]
         - cluster: "milan"
+        - cluster: "venice"
+          offloadings: ["nov"]
       peerings:
         - ["rome", "milan"]
+        - ["venice", "milan"]

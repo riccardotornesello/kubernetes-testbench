@@ -46,6 +46,8 @@ class CalicoCNI(BaseCNI):
                 "spec": {
                     "calicoNetwork": {
                         "linuxDataplane": "BPF",
+                        "bpfNetworkBootstrap": "Enabled",
+                        "kubeProxyReplacement": "Enabled",
                         "nodeAddressAutodetectionV4": {"skipInterface": "liqo.*"},
                         "ipPools": [
                             {

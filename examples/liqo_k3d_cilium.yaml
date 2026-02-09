@@ -10,9 +10,9 @@ clusters:
   - name: "rome"
     cache: true
     namespaces:
-      - name: "nc"
+      - name: "nlr"
         pods:
-          - name: "pc1"
+          - name: "plr1"
             spec:
               containers:
                 - name: "tester"
@@ -20,7 +20,7 @@ clusters:
                   imagePullPolicy: IfNotPresent
               nodeSelector:
                 tier: worker-0
-          - name: "pc2"
+          - name: "plr2"
             spec:
               containers:
                 - name: "tester"
@@ -28,9 +28,26 @@ clusters:
                   imagePullPolicy: IfNotPresent
               nodeSelector:
                 tier: worker-1
-      - name: "no"
+        services:
+          - name: "slr1"
+            spec:
+              selector:
+                app: plr1
+              ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: 80
+          - name: "slr2"
+            spec:
+              selector:
+                app: plr2
+              ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: 80
+      - name: "nor"
         pods:
-          - name: "poc1"
+          - name: "porc1"
             spec:
               containers:
                 - name: "tester"
@@ -38,7 +55,7 @@ clusters:
                   imagePullPolicy: IfNotPresent
               nodeSelector:
                 tier: worker-0
-          - name: "poc2"
+          - name: "porc2"
             spec:
               containers:
                 - name: "tester"
@@ -46,7 +63,7 @@ clusters:
                   imagePullPolicy: IfNotPresent
               nodeSelector:
                 tier: worker-1
-          - name: "pop1"
+          - name: "porp1"
             spec:
               containers:
                 - name: "tester"
@@ -54,7 +71,7 @@ clusters:
                   imagePullPolicy: IfNotPresent
               nodeSelector:
                 liqo.io/remote-cluster-id: milan
-          - name: "pop2"
+          - name: "porp2"
             spec:
               containers:
                 - name: "tester"
@@ -62,12 +79,45 @@ clusters:
                   imagePullPolicy: IfNotPresent
               nodeSelector:
                 liqo.io/remote-cluster-id: milan
+        services:
+          - name: "sorc1"
+            spec:
+              selector:
+                app: porc1
+              ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: 80
+          - name: "sorc2"
+            spec:
+              selector:
+                app: porc2
+              ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: 80
+          - name: "sorp1"
+            spec:
+              selector:
+                app: porp1
+              ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: 80
+          - name: "sorp2"
+            spec:
+              selector:
+                app: porp2
+              ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: 80
   - name: "milan"
     cache: true
     namespaces:
-      - name: "np"
+      - name: "nlm"
         pods:
-          - name: "pp1"
+          - name: "plm1"
             spec:
               containers:
                 - name: "tester"
@@ -75,7 +125,7 @@ clusters:
                   imagePullPolicy: IfNotPresent
               nodeSelector:
                 tier: worker-0
-          - name: "pp2"
+          - name: "plm2"
             spec:
               containers:
                 - name: "tester"
@@ -83,13 +133,30 @@ clusters:
                   imagePullPolicy: IfNotPresent
               nodeSelector:
                 tier: worker-1
+        services:
+          - name: "slm1"
+            spec:
+              selector:
+                app: plm1
+              ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: 80
+          - name: "slm2"
+            spec:
+              selector:
+                app: plm2
+              ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: 80
 
 tools:
   - type: "liqo"
     spec:
       installations:
         - cluster: "rome"
-          offloadings: ["no"]
+          offloadings: ["nor"]
         - cluster: "milan"
       peerings:
         - ["rome", "milan"]
