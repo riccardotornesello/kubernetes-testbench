@@ -82,10 +82,12 @@ def create_kubernetes_pod(
     k8s_client = config.new_client_from_config(config_file=kubeconfig_path)
     core_v1 = client.CoreV1Api(api_client=k8s_client)
 
+    labels = {"app": pod_name}
+
     pod = client.V1Pod(
         api_version="v1",
         kind="Pod",
-        metadata=client.V1ObjectMeta(name=pod_name),
+        metadata=client.V1ObjectMeta(name=pod_name, labels=labels),
         spec=pod_spec,
     )
 
