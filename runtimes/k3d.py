@@ -16,7 +16,7 @@ class K3dRuntimeSpec(BaseModel):
 
 
 class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
-    SUPPORTED_CNIS = ["flannel", "cilium", "calico"]
+    SUPPORTED_CNIS = ["flannel", "cilium", "calico", "calico_bpf"] # TODO: remove compatibility attribute
     DEFAULT_CNI = "flannel"
 
     def check_dependencies(self):
