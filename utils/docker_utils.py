@@ -14,6 +14,10 @@ def ensure_docker_container(
 ) -> docker.models.containers.Container:
     container = get_container(name)
     if container is not None:
+        # If the container is not running, start it
+        if container.status != "running":
+            container.start()
+
         return container
 
     container = client.containers.run(
