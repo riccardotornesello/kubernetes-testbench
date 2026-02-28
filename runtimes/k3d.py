@@ -158,7 +158,7 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
         for node in nodes.items:
             for addr in node.status.addresses:
                 if addr.type == "InternalIP":
-                    return addr.address
+                    return f"https://{addr.address}:6443"
 
         raise RuntimeError("API server address not found")
 

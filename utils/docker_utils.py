@@ -11,6 +11,7 @@ def ensure_docker_container(
     environment: dict | None = None,
     network: str | None = None,
     volumes: dict | None = None,
+    ports: dict | None = None,
 ) -> docker.models.containers.Container:
     container = get_container(name)
     if container is not None:
@@ -27,6 +28,7 @@ def ensure_docker_container(
         environment=environment,
         network=network,
         volumes=volumes,
+        ports=ports,
     )
     return container
 

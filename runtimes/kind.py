@@ -2,7 +2,6 @@ import yaml
 import subprocess
 
 from pydantic import BaseModel
-from kubernetes import client, config
 
 from runtimes.base import BaseRuntime
 from utils.kubeconfig import get_kubeconfig_location
@@ -56,10 +55,9 @@ class KindCluster(BaseRuntime[KindClusterSpec]):
 
     def get_api_server_address(self) -> str:
         kubeconfig_location = get_kubeconfig_location(self.name)
-        k8s_client = config.new_client_from_config(config_file=kubeconfig_location)
-        v1 = client.CoreV1Api(k8s_client)
-        cluster_info = v1.get_code().to_dict()
-        return cluster_info["serverAddress"]
+        with open(kubeconfig_location) as f:
+            kubeconfig_content = yaml.safe_load(f)
+        return kubeconfig_content["clusters"][0]["cluster"]["server"]
 
     def _get_nodes(self) -> list[str]:
         result = subprocess.run(

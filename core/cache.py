@@ -23,6 +23,7 @@ def run_registry_proxy_container() -> str:
             REGISTRY_PROXY_CA_VOLUME: {"bind": "/ca", "mode": "rw"},
             REGISTRY_PROXY_CACHE_VOLUME: {"bind": "/docker_mirror_cache", "mode": "rw"},
         },
+        ports={"3128": "3128"},
     )
 
     # Fetch container IP

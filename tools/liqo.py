@@ -46,7 +46,7 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
                     cluster_id=settings.name,
                     kubeconfig=get_kubeconfig_location(runtime.name),
                     version=cluster_installation.version,
-                    api_server_url=f"https://{runtime.get_api_server_address()}:6443",
+                    api_server_url=runtime.get_api_server_address(),
                     pod_cidr=settings.cluster_cidr,
                     service_cidr=settings.service_cidr,
                 )
@@ -56,6 +56,15 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
                     cluster_id=settings.name,
                     kubeconfig=get_kubeconfig_location(runtime.name),
                     version=cluster_installation.version,
+                )
+            case "minikube":
+                return self._install_in_cluster(
+                    cluster_id=settings.name,
+                    kubeconfig=get_kubeconfig_location(runtime.name),
+                    version=cluster_installation.version,
+                    api_server_url=runtime.get_api_server_address(),
+                    pod_cidr=settings.cluster_cidr,
+                    service_cidr=settings.service_cidr,
                 )
             case _:
                 raise ValueError(
@@ -90,10 +99,10 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
 
     def _install_in_cluster(
         self,
-        runtime: str,
         cluster_id: str,
         kubeconfig: str,
         version: str,
+        runtime: str | None = None,
         api_server_url: str | None = None,
         pod_cidr: str | None = None,
         service_cidr: str | None = None,
@@ -108,8 +117,12 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
         command = [
             "liqoctl",
             "install",
-            runtime,
         ]
+
+        if runtime:
+            command.append(runtime)
+
+        command.append("-v")
 
         # Build installation command by adding parameters
         parameters = {
@@ -126,10 +139,17 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
             if value is not None:
                 command.extend([param, value])
 
-        print(f"Running command: {' '.join(command)}")
-
-        # Execute installation command
-        subprocess.run(command, check=True)
+        max_retries = 10
+        for attempt in range(max_retries):
+            try:
+                print(f"Attempt {attempt + 1} of {max_retries}")
+                print(f"Running command: {' '.join(command)}")
+                subprocess.run(command, check=True)
+                break
+            except subprocess.CalledProcessError:
+                if attempt == max_retries - 1:
+                    raise
+                print(f"Attempt {attempt + 1} failed, retrying...")
 
     def _peer_clusters(
         self,
