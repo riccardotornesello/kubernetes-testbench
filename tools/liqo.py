@@ -59,12 +59,10 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
                 )
             case "minikube":
                 return self._install_in_cluster(
+                    runtime="kind",
                     cluster_id=settings.name,
                     kubeconfig=get_kubeconfig_location(runtime.name),
                     version=cluster_installation.version,
-                    api_server_url=runtime.get_api_server_address(),
-                    pod_cidr=settings.cluster_cidr,
-                    service_cidr=settings.service_cidr,
                 )
             case _:
                 raise ValueError(

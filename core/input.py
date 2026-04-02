@@ -34,8 +34,8 @@ class CommonConfig(BaseModel):
     runtime: Optional[RuntimeConfig] = None
     cni: Optional[CNIs] = None
     nodes: int = 1
-    cluster_cidr: str = "10.200.0.0/16"
-    service_cidr: str = "10.71.0.0/16"
+    cluster_cidr: str | None = None
+    service_cidr: str | None = None
     cache: bool = False
 
 
@@ -68,8 +68,8 @@ class ClusterConfig(BaseModel):
     runtime: RuntimeConfig = None
     cni: CNIs = None
     nodes: int = None
-    cluster_cidr: str = None
-    service_cidr: str = None
+    cluster_cidr: str | None = None
+    service_cidr: str | None = None
     cache: bool = None
 
     namespaces: List[NamespaceConfig] = Field(default_factory=list)

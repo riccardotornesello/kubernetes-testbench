@@ -44,8 +44,8 @@ class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
             "containerd",
             "--driver",
             "kvm2",
-            # "--network",
-            # "testbenchnet",  # TODO: use common network for all runtimes
+            "--network",
+            "testbenchnet",  # TODO: use common network for all runtimes
         ]
 
         if self.proxy_address is not None:
@@ -57,9 +57,11 @@ class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
             command.extend(
                 [
                     "--docker-env",
-                    "NO_PROXY='ttl.sh,storage.googleapis.com,localhost,127.0.0.1,0.0.0.0,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.local,.svc'",
+                    "NO_PROXY=ttl.sh,storage.googleapis.com,localhost,127.0.0.1,0.0.0.0,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.local,.svc",
                 ]
             )
+
+        print(f"Creating minikube cluster with command: {' '.join(command)}")
 
         subprocess.run(
             command,
