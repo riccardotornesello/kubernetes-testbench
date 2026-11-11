@@ -1,5 +1,14 @@
-from core.input import NamespaceConfig, DeploymentConfig, ServiceConfig, PodConfig
+from core.input import (
+    ClusterConfig,
+    DeploymentConfig,
+    ManifestConfig,
+    NamespaceConfig,
+    PodConfig,
+    ServiceConfig,
+)
+from core.log import get_logger
 from utils.kubernetes_utils import (
+    apply_manifest,
     ensure_kubernetes_namespace,
     create_kubernetes_deployment,
     create_kubernetes_service,
@@ -7,8 +16,41 @@ from utils.kubernetes_utils import (
 )
 
 
+log = get_logger(__name__)
+
+
+def create_cluster_workloads(kubeconfig: str, config: ClusterConfig):
+    """
+    Creates the namespaces, then applies the cluster manifests, then the
+    namespace manifests and workloads (deployments, services, pods).
+    """
+    for namespace in config.namespaces:
+        ensure_kubernetes_namespace(kubeconfig, namespace.name)
+
+    for manifest in config.manifests:
+        apply_manifest_file(kubeconfig, manifest)
+
+    for namespace in config.namespaces:
+        log.info(
+            "Creating namespace workloads",
+            cluster=config.name,
+            namespace=namespace.name,
+        )
+        create_namespace(kubeconfig, namespace)
+
+
+def apply_manifest_file(
+    kubeconfig: str, manifest: ManifestConfig, namespace: str = "default"
+):
+    log.info("Applying manifest", path=manifest.path, objects=len(manifest.objects))
+    apply_manifest(kubeconfig, manifest.objects, default_namespace=namespace)
+
+
 def create_namespace(kubeconfig: str, config: NamespaceConfig):
     ensure_kubernetes_namespace(kubeconfig, config.name)
+
+    for manifest in config.manifests:
+        apply_manifest_file(kubeconfig, manifest, namespace=config.name)
 
     for deployment in config.deployments:
         create_deployment(kubeconfig, config.name, deployment)

@@ -7,7 +7,7 @@ from core.paths import DEFAULT_OUTPUT_DIR, set_output_dir
 from core.settings import DOCKER_NETWORK_NAME
 from core.modules import runtimes, cnis, tools as tool_modules
 from core.types import Settings
-from core.namespaces import create_namespace
+from core.namespaces import create_cluster_workloads
 from utils.docker_utils import ensure_docker_network
 from utils.kubeconfig import get_kubeconfig_location
 
@@ -145,13 +145,7 @@ def main(config_file: str) -> None:
     # Workloads are created last, after every tool hook (no tool hook runs here)
     for cluster_cfg in cfg.clusters:
         kubeconfig_path = get_kubeconfig_location(cluster_cfg.name)
-        for namespace_cfg in cluster_cfg.namespaces:
-            log.info(
-                "Creating namespace workloads",
-                cluster=cluster_cfg.name,
-                namespace=namespace_cfg.name,
-            )
-            create_namespace(kubeconfig_path, namespace_cfg)
+        create_cluster_workloads(kubeconfig_path, cluster_cfg)
 
     log.info("Testbench ready")
 

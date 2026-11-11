@@ -1,13 +1,16 @@
 import ipaddress
-import yaml
 import os
+import re
 from typing import Annotated, List, Literal, Optional, Any, Union
 
+import yaml
 from pydantic import (
+    AfterValidator,
     BaseModel,
     BeforeValidator,
     ConfigDict,
     Field,
+    ValidationInfo,
     create_model,
     field_validator,
     model_validator,
@@ -16,6 +19,11 @@ from pydantic import (
 
 from core.log import get_logger
 from core.modules import tool_specs, cni_specs, runtime_specs
+from utils.kubernetes_models import (
+    KubernetesValidationError,
+    model_name_for,
+    to_model,
+)
 
 log = get_logger(__name__)
 
@@ -69,27 +77,187 @@ def _validate_ipv4_network(value: str | None) -> str | None:
         raise ValueError(f"invalid IPv4 CIDR '{value}': {e}") from e
 
 
+def _kubernetes_model(type_name: str) -> Any:
+    """
+    A camelCase mapping (as in a Kubernetes manifest) validated against, and
+    converted into, the model `type_name` of the official Kubernetes client
+    (e.g. `V1PodSpec`): unknown fields, wrong types and missing required
+    fields are rejected.
+    """
+    return Annotated[Any, BeforeValidator(lambda value: to_model(value, type_name))]
+
+
+# RFC 1123 label (namespaces), DNS-1035 label (services), RFC 1123 subdomain
+# (pods, deployments): the rules applied by the API server to the names
+_DNS1123_LABEL = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+_DNS1035_LABEL = re.compile(r"^[a-z]([-a-z0-9]*[a-z0-9])?$")
+
+
+def _validate_dns1123_label(value: str) -> str:
+    if len(value) > 63 or not _DNS1123_LABEL.match(value):
+        raise ValueError(
+            f"'{value}' is not a valid RFC 1123 label: at most 63 lowercase "
+            "alphanumeric characters or '-', starting and ending with an "
+            "alphanumeric character"
+        )
+    return value
+
+
+def _validate_dns1035_label(value: str) -> str:
+    if len(value) > 63 or not _DNS1035_LABEL.match(value):
+        raise ValueError(
+            f"'{value}' is not a valid DNS-1035 label: at most 63 lowercase "
+            "alphanumeric characters or '-', starting with a letter and ending "
+            "with an alphanumeric character"
+        )
+    return value
+
+
+def _validate_dns1123_subdomain(value: str) -> str:
+    if len(value) > 253 or not all(
+        _DNS1123_LABEL.match(part) for part in value.split(".")
+    ):
+        raise ValueError(
+            f"'{value}' is not a valid RFC 1123 subdomain: at most 253 "
+            "lowercase alphanumeric characters, '-' or '.', starting and "
+            "ending with an alphanumeric character"
+        )
+    return value
+
+
+Dns1123Label = Annotated[str, AfterValidator(_validate_dns1123_label)]
+Dns1035Label = Annotated[str, AfterValidator(_validate_dns1035_label)]
+Dns1123Subdomain = Annotated[str, AfterValidator(_validate_dns1123_subdomain)]
+
+
+def _ensure_unique(items: list, what: str) -> None:
+    seen = set()
+    for i, item in enumerate(items):
+        if item.name in seen:
+            raise ValueError(f"duplicate {what} name '{item.name}' (at {i})")
+        seen.add(item.name)
+
+
 class DeploymentConfig(BaseModel):
-    name: str
-    replicas: int = 1
-    pod_spec: dict = Field(default_factory=dict)
+    model_config = ConfigDict(extra="forbid")
+
+    name: Dns1123Subdomain
+    replicas: int = Field(default=1, ge=0)
+    # Pod template spec; labels `app: <name>` select the pods
+    pod_spec: _kubernetes_model("V1PodSpec")
 
 
 class ServiceConfig(BaseModel):
-    name: str
-    spec: dict = Field(default_factory=dict)
+    model_config = ConfigDict(extra="forbid")
+
+    name: Dns1035Label
+    spec: _kubernetes_model("V1ServiceSpec") = Field(
+        default_factory=dict, validate_default=True
+    )
 
 
 class PodConfig(BaseModel):
-    name: str
-    spec: dict = Field(default_factory=dict)
+    model_config = ConfigDict(extra="forbid")
+
+    name: Dns1123Subdomain
+    spec: _kubernetes_model("V1PodSpec")
+
+
+class ManifestConfig(BaseModel):
+    """
+    A (multi-document) YAML manifest, applied with server-side apply.
+    `manifests: [path]` is a shorthand for `manifests: [{path: path}]`; a
+    relative path is relative to the directory of the configuration file.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    # Objects of the manifest, loaded and checked at validation time
+    objects: List[dict] = Field(default_factory=list, exclude=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def load(cls, data: Any, info: ValidationInfo) -> Any:
+        if isinstance(data, str):
+            data = {"path": data}
+        if not isinstance(data, dict) or not isinstance(data.get("path"), str):
+            return data
+
+        base_dir = (info.context or {}).get("base_dir") or os.getcwd()
+        path = os.path.normpath(
+            os.path.join(base_dir, os.path.expanduser(data["path"]))
+        )
+        return {**data, "path": path, "objects": load_manifest_file(path)}
+
+
+def load_manifest_file(path: str) -> list[dict]:
+    """
+    Loads a YAML manifest and checks its objects: `apiVersion`, `kind` and
+    `metadata.name` are required, and built-in resources are validated
+    against the models of the Kubernetes client.
+    """
+    if not os.path.isfile(path):
+        raise ValueError(f"manifest file not found: {path}")
+    try:
+        with open(path, "r") as f:
+            documents = list(yaml.safe_load_all(f))
+    except (OSError, yaml.YAMLError) as e:
+        raise ValueError(f"cannot read manifest {path}: {e}") from e
+
+    objects = []
+    errors = []
+    for i, obj in enumerate(documents):
+        if obj is None:
+            continue
+        where = f"{path} (document {i})"
+        if not isinstance(obj, dict):
+            errors.append(f"{where}: expected a mapping, got {type(obj).__name__}")
+            continue
+        missing = [f for f in ("apiVersion", "kind") if not isinstance(obj.get(f), str)]
+        if not isinstance((obj.get("metadata") or {}).get("name"), str):
+            missing.append("metadata.name")
+        if missing:
+            errors.append(f"{where}: missing {', '.join(missing)}")
+            continue
+        where = f"{path} ({obj['kind']} {obj['metadata']['name']})"
+        if obj["kind"].endswith("List"):
+            errors.append(f"{where}: List objects are not supported")
+            continue
+
+        model = model_name_for(obj["apiVersion"], obj["kind"])
+        if model is not None:
+            try:
+                to_model(obj, model)
+            except KubernetesValidationError as e:
+                errors.extend(f"{where}: {err}" for err in e.errors)
+                continue
+        objects.append(obj)
+
+    if errors:
+        raise KubernetesValidationError(errors)
+    if not objects:
+        raise ValueError(f"manifest {path} contains no objects")
+    return objects
 
 
 class NamespaceConfig(BaseModel):
-    name: str
+    model_config = ConfigDict(extra="forbid")
+
+    name: Dns1123Label
+    # Applied before the deployments, services and pods; objects without a
+    # namespace are created in this one
+    manifests: List[ManifestConfig] = Field(default_factory=list)
     deployments: List[DeploymentConfig] = Field(default_factory=list)
     services: List[ServiceConfig] = Field(default_factory=list)
     pods: List[PodConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_uniqueness(self):
+        _ensure_unique(self.deployments, "deployment")
+        _ensure_unique(self.services, "service")
+        _ensure_unique(self.pods, "pod")
+        return self
 
 
 class CommonConfig(BaseModel):
@@ -102,6 +270,7 @@ class CommonConfig(BaseModel):
     nodes: int = Field(default=1, ge=1)
     cluster_cidr: str | None = None
     service_cidr: str | None = None
+    manifests: Optional[List[ManifestConfig]] = None
     namespaces: Optional[List[NamespaceConfig]] = None
 
     _validate_cidrs = field_validator("cluster_cidr", "service_cidr")(
@@ -120,6 +289,8 @@ class ClusterConfig(BaseModel):
     cluster_cidr: str = DEFAULT_CLUSTER_CIDR
     service_cidr: str = DEFAULT_SERVICE_CIDR
 
+    # Applied after the namespaces are created, before their workloads
+    manifests: List[ManifestConfig] = Field(default_factory=list)
     namespaces: List[NamespaceConfig] = Field(default_factory=list)
 
     _validate_cidrs = field_validator("cluster_cidr", "service_cidr")(
@@ -147,6 +318,11 @@ class ClusterConfig(BaseModel):
             )
 
         self.cni.spec.validate_cluster(cluster_cidr, service_cidr, self.nodes)
+        return self
+
+    @model_validator(mode="after")
+    def validate_namespaces(self):
+        _ensure_unique(self.namespaces, "namespace")
         return self
 
 
@@ -198,20 +374,34 @@ class RootConfig(BaseModel):
         return self
 
 
-def format_pydantic_error(err):
+def format_pydantic_error(err) -> list[str]:
     """
-    Formats Pydantic location tuple into a readable string.
-    Example: ('clusters', 0, 'name') -> 'clusters.0.name'
+    Formats a Pydantic error as readable lines, prefixed by its location.
+    Example: ('clusters', 0, 'name') -> 'clusters.0.name: ...'. Kubernetes
+    validation errors give one line per error, e.g.
+    'clusters.0.namespaces.0.pods.0.spec: containers.0.name: field required'.
     """
     loc_path = ".".join(str(x) for x in err["loc"])
     # Remove 'root.' prefix if present for cleaner output
     if loc_path.startswith("root."):
         loc_path = loc_path[5:]
-    return f"{loc_path}: {err['msg']}" if loc_path else err["msg"]
+
+    exc = (err.get("ctx") or {}).get("error")
+    if isinstance(exc, KubernetesValidationError):
+        messages = exc.errors
+    elif isinstance(exc, ValueError):
+        messages = [str(exc)]
+    else:
+        messages = [err["msg"]]
+
+    return [f"{loc_path}: {msg}" if loc_path else msg for msg in messages]
 
 
-def validate_data(raw_data: Any) -> Optional[RootConfig]:
-    """Main function to run the validation."""
+def validate_data(raw_data: Any, base_dir: str | None = None) -> Optional[RootConfig]:
+    """
+    Main function to run the validation. `base_dir` is the directory relative
+    manifest paths are resolved against (default: the working directory).
+    """
 
     if raw_data is None:
         log.error("Configuration is empty")
@@ -221,12 +411,14 @@ def validate_data(raw_data: Any) -> Optional[RootConfig]:
         return None
 
     try:
-        cfg = RootConfig(**raw_data)
+        cfg = RootConfig.model_validate(
+            raw_data, context={"base_dir": base_dir or os.getcwd()}
+        )
     except ValidationError as e:
-        errors = e.errors()
-        log.error("Configuration validation failed", errors=len(errors))
-        for err in errors:
-            log.error(format_pydantic_error(err))
+        lines = [line for err in e.errors() for line in format_pydantic_error(err)]
+        log.error("Configuration validation failed", errors=len(lines))
+        for line in lines:
+            log.error(line)
         return None
 
     log.info("Configuration validated")
@@ -248,4 +440,4 @@ def validate_config_file(file_path: str) -> Optional[RootConfig]:
             log.error("Invalid YAML", path=file_path, error=str(e))
             return None
 
-    return validate_data(raw_data)
+    return validate_data(raw_data, base_dir=os.path.dirname(os.path.abspath(file_path)))

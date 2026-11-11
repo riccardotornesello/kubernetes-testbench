@@ -32,7 +32,7 @@ def create_kubernetes_deployment(
     deployment_name: str,
     namespace: str,
     replicas: int,
-    pod_spec: dict,
+    pod_spec: client.V1PodSpec,
 ):
     k8s_client = config.new_client_from_config(config_file=kubeconfig_path)
     apps_v1 = client.AppsV1Api(api_client=k8s_client)
@@ -64,7 +64,7 @@ def create_kubernetes_service(
     kubeconfig_path: str,
     service_name: str,
     namespace: str,
-    service_spec: dict,
+    service_spec: client.V1ServiceSpec,
 ):
     k8s_client = config.new_client_from_config(config_file=kubeconfig_path)
     core_v1 = client.CoreV1Api(api_client=k8s_client)
@@ -83,7 +83,7 @@ def create_kubernetes_pod(
     kubeconfig_path: str,
     pod_name: str,
     namespace: str,
-    pod_spec: dict,
+    pod_spec: client.V1PodSpec,
 ):
     k8s_client = config.new_client_from_config(config_file=kubeconfig_path)
     core_v1 = client.CoreV1Api(api_client=k8s_client)
@@ -118,9 +118,11 @@ def apply_manifest(
     kubeconfig_path: str,
     objects: list[dict],
     timeout: int = 120,
+    default_namespace: str = "default",
 ) -> None:
     """
-    Server-side applies a list of objects, in order.
+    Server-side applies a list of objects, in order. Namespaced objects
+    without `metadata.namespace` are applied in `default_namespace`.
 
     Resource types not yet known to the API server (e.g. custom resources
     whose CRD was applied a moment ago) are retried until `timeout`.
@@ -144,7 +146,7 @@ def apply_manifest(
 
         namespace = None
         if resource.namespaced:
-            namespace = obj.get("metadata", {}).get("namespace", "default")
+            namespace = obj.get("metadata", {}).get("namespace") or default_namespace
 
         resource.server_side_apply(
             body=obj,

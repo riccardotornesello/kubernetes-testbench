@@ -221,6 +221,56 @@ def pre_cni_install(self, settings, runtime, cni):
         cni.add_patch(_calico_skip_liqo_interfaces)
 ```
 
+## Workloads
+
+Created last, after every tool hook. Order, per cluster: namespaces, cluster
+`manifests`, then for each namespace its `manifests`, `deployments`,
+`services` and `pods`.
+
+```yaml
+clusters:
+  - name: rome
+    manifests:                     # cluster-level: namespaced objects without
+      - crds/my-crd.yaml           # a namespace go to `default`
+    namespaces:
+      - name: demo
+        manifests:                 # objects without a namespace go to `demo`
+          - ./app.yaml             # relative to the configuration file
+          - path: /abs/path/db.yaml
+        deployments:
+          - name: web
+            replicas: 2
+            pod_spec:              # V1PodSpec, pods labeled `app: web`
+              containers: [{name: web, image: nginx}]
+        services:
+          - name: web
+            spec:                  # V1ServiceSpec
+              selector: {app: web}
+              ports: [{port: 80, targetPort: 80}]
+        pods:
+          - name: tester           # labeled `app: tester`
+            spec:                  # V1PodSpec
+              containers: [{name: tester, image: busybox}]
+```
+
+Everything is validated before any cluster is created:
+
+- `pod_spec`/`spec` are converted into the models of the official Kubernetes
+  Python client (`V1PodSpec`, `V1ServiceSpec`, camelCase fields as in a
+  manifest): unknown fields (with a "did you mean" hint), wrong types and
+  missing required fields are rejected, each with its path
+  (`utils/kubernetes_models.py`). Numbers are accepted where a string is
+  expected (`cpu: 1`).
+- names follow the API server rules (RFC 1123 label for namespaces, DNS-1035
+  label for services, RFC 1123 subdomain for pods and deployments) and are
+  unique per kind in their namespace/cluster.
+- manifests (multi-document YAML, `manifests: [path]` is a shorthand for
+  `[{path: path}]`) must exist and contain objects with `apiVersion`, `kind`
+  and `metadata.name`; built-in resources (e.g. `apps/v1 Deployment`) are
+  validated against the client models, custom resources are not. They are
+  applied with server-side apply, retrying resources whose CRD is not yet
+  served.
+
 ## TODO
 
 See [TODO.md](TODO.md).
