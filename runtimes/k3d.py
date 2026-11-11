@@ -5,7 +5,12 @@ import subprocess
 from kubernetes import config, client
 from pydantic import BaseModel
 
-from runtimes.base import BaseRuntime
+from runtimes.base import BaseRuntime, CNI_PLUGINS_VERSION
+from utils.docker_utils import (
+    client as docker_client,
+    ensure_kernel_modules,
+    install_cni_plugins,
+)
 from core.settings import DOCKER_NETWORK_NAME
 from core.cache import REGISTRY_PROXY_CA_VOLUME
 from utils.kubeconfig import get_kubeconfig_location
@@ -16,9 +21,6 @@ class K3dRuntimeSpec(BaseModel):
 
 
 class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
-    SUPPORTED_CNIS = ["flannel", "cilium", "calico", "calico_bpf"] # TODO: remove compatibility attribute
-    DEFAULT_CNI = "flannel"
-
     def check_dependencies(self):
         subprocess.run(
             ["k3d", "--version"],
@@ -28,20 +30,6 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
     def init_cluster(self) -> None:
         cluster_config = self._gen_config()
         cluster_config_yaml = yaml.dump(cluster_config)
-
-        additional_args = []
-
-        # Disable flannel if another CNI is selected
-        # TODO: move to config generation
-        if self.settings.cni != self.DEFAULT_CNI:
-            additional_args.extend(
-                [
-                    "--k3s-arg",
-                    "--flannel-backend=none@server:*",
-                    "--k3s-arg",
-                    "--disable-network-policy@server:*",
-                ]
-            )
 
         # Create the cluster using k3d CLI
         subprocess.run(
@@ -53,8 +41,7 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
                 "--config",
                 "-",
                 "--kubeconfig-update-default=false",
-            ]
-            + additional_args,
+            ],
             input=cluster_config_yaml.encode(),
             check=True,
         )
@@ -82,6 +69,37 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
         )
         return result.stdout
 
+    def load_kernel_modules(self, modules: list[str]) -> None:
+        # Nodes are containers sharing the host kernel: loading on one is enough
+        ensure_kernel_modules(self._get_nodes()[0], modules)
+
+    def install_cni_plugins(self, plugins: list[str]) -> None:
+        # k3s ships the CNI plugins in its own data dir, used only by the
+        # embedded flannel: copy them in /opt/cni/bin, used by the other CNIs.
+        install_cni_plugins(self._get_nodes(), plugins, CNI_PLUGINS_VERSION)
+
+    def _get_nodes(self) -> list[str]:
+        containers = docker_client.containers.list(
+            filters={"label": f"k3d.cluster={self.name}"}
+        )
+        return [
+            c.name
+            for c in containers
+            if c.labels.get("k3d.role") in ("server", "agent")
+        ]
+
+    def _gen_k3s_server_args(self) -> list[str]:
+        args = [
+            f"--cluster-cidr={self.settings.cluster_cidr}",
+            f"--service-cidr={self.settings.service_cidr}",
+            # The CNI is always installed by the testbench
+            "--flannel-backend=none",
+            "--disable-network-policy",
+        ]
+        if self.cni.replaces_kube_proxy:
+            args.append("--disable-kube-proxy")
+        return args
+
     def _gen_config(self) -> dict:
         conf = {
             "apiVersion": "k3d.io/v1alpha5",
@@ -93,14 +111,8 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
             "options": {
                 "k3s": {
                     "extraArgs": [
-                        {
-                            "arg": f"--cluster-cidr={self.settings.cluster_cidr}",
-                            "nodeFilters": ["server:*"],
-                        },
-                        {
-                            "arg": f"--service-cidr={self.settings.service_cidr}",
-                            "nodeFilters": ["server:*"],
-                        },
+                        {"arg": arg, "nodeFilters": ["server:*"]}
+                        for arg in self._gen_k3s_server_args()
                     ],
                     "nodeLabels": [
                         {

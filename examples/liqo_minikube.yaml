@@ -1,7 +1,15 @@
 default:
   runtime:
     type: "minikube"
-  cni: "flannel"
+  # CNI: `cni: flannel` is a shorthand for `cni: {type: flannel}`.
+  # Every spec field is optional; see cnis/<type>.py for the available ones.
+  cni:
+    type: "flannel"
+    spec:
+      version: "0.28.10"
+      backend: "vxlan"
+      wait: true
+      timeout: 600
   nodes: 2
   cluster_cidr: "10.200.0.0/16"
   service_cidr: "10.71.0.0/16"

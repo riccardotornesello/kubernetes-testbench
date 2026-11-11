@@ -3,7 +3,8 @@ import subprocess
 
 from pydantic import BaseModel
 
-from runtimes.base import BaseRuntime
+from runtimes.base import BaseRuntime, CNI_PLUGINS_VERSION
+from utils.docker_utils import ensure_kernel_modules, install_cni_plugins
 from utils.kubeconfig import get_kubeconfig_location
 
 
@@ -12,9 +13,6 @@ class KindClusterSpec(BaseModel):
 
 
 class KindCluster(BaseRuntime[KindClusterSpec]):
-    SUPPORTED_CNIS = ["kindnet"]
-    DEFAULT_CNI = "kindnet"
-
     def check_dependencies(self):
         subprocess.run(
             ["kind", "--version"],
@@ -37,8 +35,7 @@ class KindCluster(BaseRuntime[KindClusterSpec]):
                 get_kubeconfig_location(self.name),
                 "--config",
                 "-",
-                "--wait",
-                "5m",
+                # No --wait: nodes become Ready only after the CNI is installed
             ],
             input=cluster_config_yaml.encode(),
             check=True,
@@ -75,6 +72,14 @@ class KindCluster(BaseRuntime[KindClusterSpec]):
         nodes = result.stdout.strip().splitlines()
         return nodes
 
+    def load_kernel_modules(self, modules: list[str]) -> None:
+        # Nodes are containers sharing the host kernel: loading on one is enough
+        ensure_kernel_modules(self._get_nodes()[0], modules)
+
+    def install_cni_plugins(self, plugins: list[str]) -> None:
+        # kindest/node ships only host-local, loopback, portmap and ptp
+        install_cni_plugins(self._get_nodes(), plugins, CNI_PLUGINS_VERSION)
+
     def _install_cache_proxy(self) -> None:
         for node in self._get_nodes():
             subprocess.run(
@@ -96,6 +101,9 @@ class KindCluster(BaseRuntime[KindClusterSpec]):
             "networking": {
                 "podSubnet": self.settings.cluster_cidr,
                 "serviceSubnet": self.settings.service_cidr,
+                # The CNI is always installed by the testbench
+                "disableDefaultCNI": True,
+                "kubeProxyMode": "none" if self.cni.replaces_kube_proxy else "iptables",
             },
             "nodes": [
                 {

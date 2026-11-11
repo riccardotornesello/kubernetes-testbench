@@ -1,21 +1,25 @@
+import ipaddress
 import yaml
 import os
-from typing import List, Optional, Any
+from typing import Annotated, List, Literal, Optional, Any, Union
 from enum import Enum
 
-from pydantic import BaseModel, Field, model_validator, ValidationError
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    Field,
+    create_model,
+    field_validator,
+    model_validator,
+    ValidationError,
+)
 
-from core.modules import runtimes, cnis, tools
+from core.modules import runtimes, tools, cni_specs
 
 
 Runtimes = Enum(
     "Runtimes",
     ((value, value) for value in list(runtimes.keys())),
-    type=str,
-)
-CNIs = Enum(
-    "CNIs",
-    ((value, value) for value in list(cnis.keys())),
     type=str,
 )
 Tools = Enum(
@@ -30,13 +34,54 @@ class RuntimeConfig(BaseModel):
     spec: dict = Field(default_factory=dict)  # TODO: validate
 
 
+def _cni_config_model(name: str, spec_cls: type[BaseModel]) -> type[BaseModel]:
+    return create_model(
+        f"{spec_cls.__name__}Config",
+        type=(Literal[name], ...),
+        spec=(spec_cls, Field(default_factory=spec_cls)),
+    )
+
+
+def _cni_shorthand(value: Any) -> Any:
+    # `cni: flannel` is a shorthand for `cni: {type: flannel}`
+    if isinstance(value, str):
+        return {"type": value}
+    return value
+
+
+# `cni: {type: <name>, spec: {...}}`, where `spec` is validated against the
+# spec model exported by cnis/<name>.py
+CNIConfig = Annotated[
+    Union[tuple(_cni_config_model(n, s) for n, s in cni_specs.items())],
+    Field(discriminator="type"),
+    BeforeValidator(_cni_shorthand),
+]
+
+DEFAULT_CNI = "flannel"
+DEFAULT_CLUSTER_CIDR = "10.244.0.0/16"
+DEFAULT_SERVICE_CIDR = "10.96.0.0/16"
+
+
+def _validate_ipv4_network(value: str | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        return str(ipaddress.IPv4Network(value, strict=True))
+    except ValueError as e:
+        raise ValueError(f"invalid IPv4 CIDR '{value}': {e}") from e
+
+
 class CommonConfig(BaseModel):
     runtime: Optional[RuntimeConfig] = None
-    cni: Optional[CNIs] = None
-    nodes: int = 1
+    cni: Optional[CNIConfig] = None
+    nodes: int = Field(default=1, ge=1)
     cluster_cidr: str | None = None
     service_cidr: str | None = None
     cache: bool = False
+
+    _validate_cidrs = field_validator("cluster_cidr", "service_cidr")(
+        _validate_ipv4_network
+    )
 
 
 class DeploymentConfig(BaseModel):
@@ -65,14 +110,41 @@ class NamespaceConfig(BaseModel):
 class ClusterConfig(BaseModel):
     name: str
 
-    runtime: RuntimeConfig = None
-    cni: CNIs = None
-    nodes: int = None
-    cluster_cidr: str | None = None
-    service_cidr: str | None = None
-    cache: bool = None
+    runtime: RuntimeConfig
+    cni: CNIConfig = Field(default=DEFAULT_CNI, validate_default=True)
+    nodes: int = Field(default=1, ge=1)
+    cluster_cidr: str = DEFAULT_CLUSTER_CIDR
+    service_cidr: str = DEFAULT_SERVICE_CIDR
+    cache: bool = False
 
     namespaces: List[NamespaceConfig] = Field(default_factory=list)
+
+    _validate_cidrs = field_validator("cluster_cidr", "service_cidr")(
+        _validate_ipv4_network
+    )
+
+    @model_validator(mode="after")
+    def validate_network(self):
+        cluster_cidr = ipaddress.IPv4Network(self.cluster_cidr)
+        service_cidr = ipaddress.IPv4Network(self.service_cidr)
+
+        if cluster_cidr.overlaps(service_cidr):
+            raise ValueError(
+                f"cluster_cidr {cluster_cidr} overlaps service_cidr {service_cidr}"
+            )
+
+        # Node pod CIDRs are /24 (default --node-cidr-mask-size)
+        if (
+            cluster_cidr.prefixlen > 24
+            or 2 ** (24 - cluster_cidr.prefixlen) < self.nodes
+        ):
+            raise ValueError(
+                f"cluster_cidr {cluster_cidr} does not contain a /24 "
+                f"for each of the {self.nodes} nodes"
+            )
+
+        self.cni.spec.validate_cluster(cluster_cidr, service_cidr, self.nodes)
+        return self
 
 
 class ToolConfig(BaseModel):
@@ -81,14 +153,22 @@ class ToolConfig(BaseModel):
 
 
 class RootConfig(BaseModel):
-    default: Optional[CommonConfig] = Field(default_factory=CommonConfig)
+    default: Optional[CommonConfig] = None
     clusters: List[ClusterConfig]
     tools: Optional[List[ToolConfig]] = Field(default_factory=list)
 
     @model_validator(mode="before")
     def merge_defaults(cls, data):
-        default_cfg = data.get("default", {})
-        for cluster in data.get("clusters", []):
+        # Each field of `default` is copied, as is, into the clusters that do
+        # not define it (shallow merge: a cluster `cni` replaces the default one)
+        if not isinstance(data, dict):
+            return data
+        default_cfg = data.get("default") or {}
+        if not isinstance(default_cfg, dict):
+            return data
+        for cluster in data.get("clusters") or []:
+            if not isinstance(cluster, dict):
+                continue
             for field, value in default_cfg.items():
                 if field not in cluster:
                     cluster[field] = value
@@ -105,19 +185,6 @@ class RootConfig(BaseModel):
                 )
             cluster_names.add(cluster.name)
 
-        return self
-
-    @model_validator(mode="after")
-    def validate_compatibility(self):
-        # Validate runtime and CNI compatibility
-        for i, cluster in enumerate(self.clusters):
-            runtime_cls = runtimes[cluster.runtime.type.value]
-            if cluster.cni.value not in runtime_cls.SUPPORTED_CNIS:
-                raise ValueError(
-                    f"Unsupported CNI '{cluster.cni.value}' for runtime '{cluster.runtime.type.value}' "
-                    f"in cluster '{cluster.name}' (at clusters.{i}). "
-                    f"Supported CNIs are: {runtime_cls.SUPPORTED_CNIS}."
-                )
         return self
 
 

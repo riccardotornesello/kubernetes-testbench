@@ -6,37 +6,32 @@ from utils.kubeconfig import get_kubeconfig_location
 from core.cache import run_registry_proxy_container
 
 
-# TODO: single function to create settings
-
-
-def create_runtime_instance(config: ClusterConfig):
-    return runtimes[config.runtime.type.value](
+def create_settings(config: ClusterConfig) -> Settings:
+    return Settings(
+        runtime=config.runtime.type.value,
+        cni=config.cni.type,
         name=config.name,
-        settings=Settings(
-            runtime=config.runtime.type.value,
-            cni=config.cni.value,
-            name=config.name,
-            nodes=config.nodes,
-            cluster_cidr=config.cluster_cidr,
-            service_cidr=config.service_cidr,
-            cache=config.cache,
-        ),
-        spec=runtime_specs[config.runtime.type.value](**config.runtime.spec),
+        nodes=config.nodes,
+        cluster_cidr=config.cluster_cidr,
+        service_cidr=config.service_cidr,
+        cache=config.cache,
     )
 
 
 def create_cni_instance(config: ClusterConfig):
-    return cnis[config.cni.value](
+    return cnis[config.cni.type](
         cluster_name=config.name,
-        settings=Settings(
-            runtime=config.runtime.type.value,
-            cni=config.cni.value,
-            name=config.name,
-            nodes=config.nodes,
-            cluster_cidr=config.cluster_cidr,
-            service_cidr=config.service_cidr,
-            cache=config.cache,
-        ),
+        settings=create_settings(config),
+        spec=config.cni.spec,
+    )
+
+
+def create_runtime_instance(config: ClusterConfig, cni):
+    return runtimes[config.runtime.type.value](
+        name=config.name,
+        settings=create_settings(config),
+        spec=runtime_specs[config.runtime.type.value](**config.runtime.spec),
+        cni=cni,
     )
 
 
@@ -53,13 +48,13 @@ def main(config_file: str) -> None:
         exit(1)
 
     tools = [create_tool_instance(tool_cfg) for tool_cfg in cfg.tools]
-    clusters = {
-        cluster_cfg.name: {
-            "runtime": create_runtime_instance(cluster_cfg),
-            "cni": create_cni_instance(cluster_cfg),
+    clusters = {}
+    for cluster_cfg in cfg.clusters:
+        cni = create_cni_instance(cluster_cfg)
+        clusters[cluster_cfg.name] = {
+            "runtime": create_runtime_instance(cluster_cfg, cni),
+            "cni": cni,
         }
-        for cluster_cfg in cfg.clusters
-    }
 
     all_settings = {cluster_cfg.name: cluster_cfg for cluster_cfg in cfg.clusters}
     all_runtimes = {cluster: clusters[cluster]["runtime"] for cluster in clusters}
@@ -102,7 +97,7 @@ def main(config_file: str) -> None:
         for tool in tools:
             tool.pre_cni_install(**hook_args)
 
-        cluster["runtime"].install_cni(cluster["cni"])
+        cluster["runtime"].install_cni()
 
         # Hook: once per cluster, after CNI installation
         for tool in tools:

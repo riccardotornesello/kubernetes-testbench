@@ -5,7 +5,6 @@ import yaml
 
 from pydantic import BaseModel
 
-from cnis.base import BaseCNI
 from runtimes.base import BaseRuntime
 from utils.kubeconfig import get_kubeconfig_location
 from utils.ip import get_main_ip
@@ -16,7 +15,6 @@ class MinikubeClusterSpec(BaseModel):
 
 
 class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
-    SUPPORTED_CNIS = ["flannel", "cilium", "calico", "calico_bpf"]
 
     def check_dependencies(self):
         subprocess.run(
@@ -34,8 +32,11 @@ class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
             self.name,
             "--nodes",
             str(self.settings.nodes),
+            # The CNI is always installed by the testbench: the minikube
+            # built-in manifests ignore the CNI spec (e.g. flannel always uses
+            # 10.244.0.0/16, whatever the cluster CIDR is)
             "--cni",
-            self.settings.cni,  # TODO: suport calico_bpf
+            "false",
             "--service-cluster-ip-range",
             self.settings.service_cidr,
             "--extra-config",
@@ -47,6 +48,11 @@ class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
             "--network",
             "testbenchnet",  # TODO: use common network for all runtimes
         ]
+
+        if self.cni.replaces_kube_proxy:
+            command.extend(
+                ["--extra-config", "kubeadm.skip-phases=addon/kube-proxy"]
+            )
 
         if self.proxy_address is not None:
             real_proxy_address = (
@@ -83,9 +89,6 @@ class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
         with open(kubeconfig_location) as f:
             kubeconfig_content = yaml.safe_load(f)
         return kubeconfig_content["clusters"][0]["cluster"]["server"]
-
-    def install_cni(self, cni: BaseCNI) -> None:
-        return
 
 
 module = MinikubeCluster
