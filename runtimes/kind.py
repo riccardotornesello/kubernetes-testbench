@@ -1,3 +1,5 @@
+"""kind runtime: clusters of docker containers."""
+
 import yaml
 
 from runtimes.base import (
@@ -23,6 +25,8 @@ class KindClusterSpec(BaseRuntimeSpec):
 
 
 class KindCluster(BaseRuntime[KindClusterSpec]):
+    """Cluster created with kind."""
+
     def check_dependencies(self):
         run_command(["kind", "--version"], capture=True)
 
@@ -61,6 +65,7 @@ class KindCluster(BaseRuntime[KindClusterSpec]):
         return f"https://{networks[DOCKER_NETWORK_NAME]['IPAddress']}:6443"
 
     def _get_nodes(self) -> list[str]:
+        """Names of the node containers."""
         result = run_command(
             [
                 "kind",
@@ -83,11 +88,13 @@ class KindCluster(BaseRuntime[KindClusterSpec]):
         install_cni_plugins(self._get_nodes(), plugins, CNI_PLUGINS_VERSION)
 
     def _configure_node_proxy(self) -> None:
+        """Makes containerd of every node pull through the node proxy."""
         script = self.node_proxy_setup_script(service="containerd")
         for node in self._get_nodes():
             run_command(["docker", "exec", node, "sh", "-c", script])
 
     def _gen_config(self) -> dict:
+        """kind cluster configuration."""
         return {
             "apiVersion": "kind.x-k8s.io/v1alpha4",
             "kind": "Cluster",

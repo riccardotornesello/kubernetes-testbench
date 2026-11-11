@@ -1,8 +1,11 @@
+"""Base class of the CNIs and their shared parameters."""
+
 import ipaddress
+import re
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Generic, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from core.log import get_logger
 from core.types import Settings
@@ -10,6 +13,9 @@ from utils.kubeconfig import get_kubeconfig_location
 from utils.kubernetes_utils import wait_for_nodes_ready, wait_for_workloads_ready
 
 log = get_logger(__name__)
+
+# Semantic version without the leading "v" (e.g. 1.18.6, 3.30.0-rc1)
+_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$")
 
 
 class BaseCNISpec(BaseModel):
@@ -20,12 +26,20 @@ class BaseCNISpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    # CNI version to install (without the leading "v")
+    # CNI version to install (without the leading "v"), part of download URLs
     version: str
     # Wait for the CNI (and the nodes) to be ready before going on
     wait: bool = True
     # Seconds to wait for the CNI to become ready
     timeout: int = Field(default=600, gt=0)
+
+    @field_validator("version")
+    @classmethod
+    def _validate_version(cls, value: str) -> str:
+        # Inherited by the subclasses, which redefine the field default
+        if not _VERSION_RE.match(value):
+            raise ValueError(f"invalid version '{value}': expected e.g. 1.2.3")
+        return value
 
     def validate_cluster(
         self,
@@ -72,6 +86,7 @@ class BaseCNI(ABC, Generic[SpecT]):
 
     @property
     def kubeconfig(self) -> str:
+        """Kubeconfig of the cluster."""
         return get_kubeconfig_location(self.cluster_name)
 
     @property
@@ -83,6 +98,7 @@ class BaseCNI(ABC, Generic[SpecT]):
         return False
 
     def check_dependencies(self) -> None:
+        """Raises if a dependency of the CNI (e.g. its CLI) is missing."""
         return
 
     def add_node_selector_requirement(self, requirement: dict) -> None:
@@ -105,6 +121,7 @@ class BaseCNI(ABC, Generic[SpecT]):
         self._patches.append(patch)
 
     def apply_patches(self, config: Any) -> Any:
+        """Applies the patches registered by the tools to `config`."""
         for patch in self._patches:
             result = patch(config)
             if result is not None:
@@ -130,9 +147,11 @@ class BaseCNI(ABC, Generic[SpecT]):
 
     @abstractmethod
     def install_cni(self) -> None:
+        """Installs the CNI, applying the tool customizations."""
         raise NotImplementedError("Subclasses must implement this method.")
 
     def wait_ready(self) -> None:
+        """Waits for the CNI workloads, the nodes and CoreDNS to be ready."""
         log.info(
             "Waiting for CNI to be ready",
             cluster=self.cluster_name,

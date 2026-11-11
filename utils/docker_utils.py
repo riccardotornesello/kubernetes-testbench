@@ -1,4 +1,7 @@
+"""Docker helpers: containers, networks and node containers."""
+
 import functools
+import hashlib
 import io
 import os
 import platform
@@ -69,7 +72,8 @@ def ensure_docker_container(
     return container
 
 
-def get_container(container_name: str) -> docker.models.containers.Container:
+def get_container(container_name: str) -> docker.models.containers.Container | None:
+    """Container `container_name`, or None."""
     try:
         return get_client().containers.get(container_name)
     except docker.errors.NotFound:
@@ -80,6 +84,7 @@ def ensure_docker_network(
     network_name: str,
     driver: str = "bridge",
 ) -> docker.models.networks.Network:
+    """Network `network_name`, created if missing."""
     network = get_network(network_name)
     if network is not None:
         return network
@@ -93,6 +98,7 @@ def ensure_docker_network(
 
 
 def get_network(network_name: str) -> docker.models.networks.Network | None:
+    """Network `network_name`, or None."""
     try:
         return get_client().networks.get(network_name)
     except docker.errors.NotFound:
@@ -132,6 +138,16 @@ def install_cni_plugins(
         )
         response = requests.get(url, timeout=120)
         response.raise_for_status()
+        # Checked against the checksum published with the release: the
+        # archive is cached and its binaries run on the nodes
+        checksum = requests.get(url + ".sha256", timeout=30)
+        checksum.raise_for_status()
+        expected = checksum.text.split()[0]
+        actual = hashlib.sha256(response.content).hexdigest()
+        if actual != expected:
+            raise RuntimeError(
+                f"Checksum mismatch for {archive_name}: {actual} != {expected}"
+            )
         with open(archive_path + ".tmp", "wb") as f:
             f.write(response.content)
         os.replace(archive_path + ".tmp", archive_path)

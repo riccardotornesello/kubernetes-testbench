@@ -47,6 +47,8 @@ _CONFIGURATION.client_side_validation = True
 
 
 class KubernetesValidationError(ValueError):
+    """Errors found in an object, one string per error."""
+
     def __init__(self, errors: list[str]):
         self.errors = errors
         super().__init__("; ".join(errors))
@@ -61,13 +63,17 @@ def _type_name(value: Any) -> str:
 
 
 class _Converter:
+    """Converts values into client models, collecting the errors."""
+
     def __init__(self) -> None:
         self.errors: list[str] = []
 
     def error(self, path: str, msg: str) -> None:
+        """Records an error at `path`."""
         self.errors.append(f"{path}: {msg}" if path else msg)
 
     def convert(self, value: Any, type_name: str, path: str) -> Any:
+        """Converts `value`, of OpenAPI type `type_name` (e.g. list[V1Container])."""
         if value is None:
             return None
 
@@ -128,6 +134,7 @@ class _Converter:
         return self.convert_model(value, type_name, path)
 
     def convert_model(self, value: Any, type_name: str, path: str) -> Any:
+        """Converts a mapping into the client model `type_name`."""
         klass = getattr(models, type_name, None)
         if klass is None:
             # Unknown to this client version: kept as is

@@ -1,11 +1,14 @@
+"""Registry proxy tool: caching proxy of the images pulled by the nodes."""
+
 import hashlib
 import json
 import os
+import re
 import time
 from typing import List, Optional
 
 import requests
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from core.log import get_logger
 from core.paths import output_path
@@ -48,7 +51,13 @@ DEFAULT_NO_PROXY = [
 ]
 
 
+# Host, domain suffix, IP or CIDR, optionally with a port
+_HOST_RE = re.compile(r"^[A-Za-z0-9.*:/_-]+$")
+
+
 class RegistryAuth(BaseModel):
+    """Credentials for an upstream registry."""
+
     model_config = ConfigDict(extra="forbid")
 
     # Registry host (Docker Hub: auth.docker.io)
@@ -81,6 +90,15 @@ class RegistryProxyToolSpec(BaseToolSpec):
     # Seconds to wait for the proxy to be ready
     timeout: int = Field(default=120, gt=0)
 
+    @field_validator("registries", "extra_no_proxy")
+    @classmethod
+    def _validate_hosts(cls, values: list[str]) -> list[str]:
+        # Written into shell scripts and space/comma separated variables
+        for value in values:
+            if not _HOST_RE.match(value):
+                raise ValueError(f"invalid host '{value}'")
+        return values
+
     def validate_clusters(self, clusters: list[str]) -> None:
         if self.clusters is not None:
             check_known_clusters(self.clusters, clusters)
@@ -99,6 +117,7 @@ class RegistryProxyTool(BaseTool[RegistryProxyToolSpec]):
         self.proxy: NodeProxy | None = None
 
     def _selected(self, cluster: str) -> bool:
+        """Whether the nodes of `cluster` pull through the proxy."""
         return self.spec.clusters is None or cluster in self.spec.clusters
 
     def check_dependencies(self) -> None:
@@ -132,6 +151,7 @@ class RegistryProxyTool(BaseTool[RegistryProxyToolSpec]):
             runtime.set_node_proxy(self.proxy)
 
     def _environment(self) -> dict[str, str]:
+        """Environment variables of the proxy container."""
         env = {
             "ENABLE_MANIFEST_CACHE": str(self.spec.manifest_cache).lower(),
             "REGISTRIES": " ".join(self.spec.registries),

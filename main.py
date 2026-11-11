@@ -1,3 +1,5 @@
+"""Entry point: creates the clusters described by a configuration file."""
+
 import argparse
 import sys
 
@@ -15,6 +17,7 @@ log = get_logger("testbench")
 
 
 def create_settings(config: ClusterConfig) -> Settings:
+    """Settings of a cluster, shared by its runtime, CNI and the tools."""
     return Settings(
         runtime=config.runtime.type,
         cni=config.cni.type,
@@ -26,6 +29,7 @@ def create_settings(config: ClusterConfig) -> Settings:
 
 
 def create_cni_instance(config: ClusterConfig):
+    """CNI of the cluster."""
     return cnis[config.cni.type](
         cluster_name=config.name,
         settings=create_settings(config),
@@ -34,6 +38,7 @@ def create_cni_instance(config: ClusterConfig):
 
 
 def create_runtime_instance(config: ClusterConfig, cni):
+    """Runtime of the cluster, which installs `cni`."""
     return runtimes[config.runtime.type](
         name=config.name,
         settings=create_settings(config),
@@ -43,6 +48,7 @@ def create_runtime_instance(config: ClusterConfig, cni):
 
 
 def create_tool_instance(tool_config):
+    """Tool from its configuration."""
     return tool_modules[tool_config.type](spec=tool_config.spec)
 
 
@@ -151,6 +157,7 @@ def main(config_file: str) -> None:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Command line arguments."""
     parser = argparse.ArgumentParser(
         description="Create the clusters described by a testbench configuration."
     )

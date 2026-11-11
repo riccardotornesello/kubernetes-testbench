@@ -1,3 +1,5 @@
+"""Kubernetes API helpers: objects, manifests and readiness checks."""
+
 import time
 
 import requests
@@ -9,6 +11,7 @@ from kubernetes.dynamic.exceptions import ResourceNotFoundError
 
 
 def ensure_kubernetes_namespace(kubeconfig: str, namespace_name: str) -> bool:
+    """Creates the namespace; False if it already exists."""
     k8s_client = config.new_client_from_config(config_file=kubeconfig)
     core_v1 = client.CoreV1Api(api_client=k8s_client)
 
@@ -34,6 +37,7 @@ def create_kubernetes_deployment(
     replicas: int,
     pod_spec: client.V1PodSpec,
 ):
+    """Creates a deployment of `replicas` pods labeled `app: <name>`."""
     k8s_client = config.new_client_from_config(config_file=kubeconfig_path)
     apps_v1 = client.AppsV1Api(api_client=k8s_client)
 
@@ -66,6 +70,7 @@ def create_kubernetes_service(
     namespace: str,
     service_spec: client.V1ServiceSpec,
 ):
+    """Creates a service."""
     k8s_client = config.new_client_from_config(config_file=kubeconfig_path)
     core_v1 = client.CoreV1Api(api_client=k8s_client)
 
@@ -85,6 +90,7 @@ def create_kubernetes_pod(
     namespace: str,
     pod_spec: client.V1PodSpec,
 ):
+    """Creates a pod labeled `app: <name>`."""
     k8s_client = config.new_client_from_config(config_file=kubeconfig_path)
     core_v1 = client.CoreV1Api(api_client=k8s_client)
 
@@ -176,6 +182,7 @@ def get_api_server_endpoint(kubeconfig_path: str) -> tuple[str, int]:
 
 
 def wait_for_nodes_ready(kubeconfig_path: str, timeout: int) -> None:
+    """Waits until every node is Ready."""
     k8s_client = config.new_client_from_config(config_file=kubeconfig_path)
     core_v1 = client.CoreV1Api(api_client=k8s_client)
 
@@ -240,6 +247,7 @@ def wait_for_workloads_ready(
 
 
 def _wait_until(condition, timeout: int, describe, interval: int = 5) -> None:
+    """Polls `condition` until true, or raises TimeoutError."""
     deadline = time.monotonic() + timeout
     while True:
         try:

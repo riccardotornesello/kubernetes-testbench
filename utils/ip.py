@@ -1,7 +1,10 @@
+"""Host network helpers."""
+
 import socket
 
 
 def get_main_ip():
+    """IP of the interface of the default route (no packet is sent)."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(("8.8.8.8", 1))

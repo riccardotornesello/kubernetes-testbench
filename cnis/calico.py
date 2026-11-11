@@ -1,3 +1,5 @@
+"""Calico CNI, installed through the Tigera operator."""
+
 import ipaddress
 from typing import Literal, Optional
 
@@ -12,6 +14,8 @@ from utils.kubernetes_utils import (
 
 
 class CalicoCNISpec(BaseCNISpec):
+    """Parameters of Calico (`cni: {type: calico, spec: ...}`)."""
+
     version: str = "3.30.3"
     # Linux dataplane. BPF replaces kube-proxy: the cluster is created without it.
     dataplane: Literal["Iptables", "Nftables", "BPF"] = "Iptables"
@@ -40,6 +44,8 @@ class CalicoCNISpec(BaseCNISpec):
 
 
 class CalicoCNI(BaseCNI[CalicoCNISpec]):
+    """Installs Calico through the Tigera operator."""
+
     WORKLOADS = {"tigera-operator": None, "calico-system": None}
 
     @property
@@ -98,6 +104,7 @@ class CalicoCNI(BaseCNI[CalicoCNISpec]):
         )
 
     def _gen_config(self) -> list[dict]:
+        """Tigera operator resources: Installation and, if enabled, observability."""
         calico_network = {
             "linuxDataplane": self.spec.dataplane,
             "ipPools": [

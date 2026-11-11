@@ -1,3 +1,5 @@
+"""Base class of the tools and their hooks."""
+
 from abc import ABC
 from typing import Any, Generic, TypeVar
 

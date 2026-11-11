@@ -1,3 +1,5 @@
+"""Models and validation of the YAML configuration file."""
+
 import ipaddress
 import os
 import re
@@ -29,6 +31,7 @@ log = get_logger(__name__)
 
 
 def _typed_config_model(name: str, spec_cls: type[BaseModel]) -> type[BaseModel]:
+    """`{type: <name>, spec: <spec_cls>}` model of a component."""
     return create_model(
         f"{spec_cls.__name__}Config",
         type=(Literal[name], ...),
@@ -69,6 +72,7 @@ DEFAULT_SERVICE_CIDR = "10.96.0.0/16"
 
 
 def _validate_ipv4_network(value: str | None) -> str | None:
+    """Normalizes an IPv4 CIDR, rejecting host bits."""
     if value is None:
         return None
     try:
@@ -94,6 +98,7 @@ _DNS1035_LABEL = re.compile(r"^[a-z]([-a-z0-9]*[a-z0-9])?$")
 
 
 def _validate_dns1123_label(value: str) -> str:
+    """Validates a namespace or cluster name."""
     if len(value) > 63 or not _DNS1123_LABEL.match(value):
         raise ValueError(
             f"'{value}' is not a valid RFC 1123 label: at most 63 lowercase "
@@ -104,6 +109,7 @@ def _validate_dns1123_label(value: str) -> str:
 
 
 def _validate_dns1035_label(value: str) -> str:
+    """Validates a service name."""
     if len(value) > 63 or not _DNS1035_LABEL.match(value):
         raise ValueError(
             f"'{value}' is not a valid DNS-1035 label: at most 63 lowercase "
@@ -114,6 +120,7 @@ def _validate_dns1035_label(value: str) -> str:
 
 
 def _validate_dns1123_subdomain(value: str) -> str:
+    """Validates a pod or deployment name."""
     if len(value) > 253 or not all(
         _DNS1123_LABEL.match(part) for part in value.split(".")
     ):
@@ -131,6 +138,7 @@ Dns1123Subdomain = Annotated[str, AfterValidator(_validate_dns1123_subdomain)]
 
 
 def _ensure_unique(items: list, what: str) -> None:
+    """Raises if two `items` share a name."""
     seen = set()
     for i, item in enumerate(items):
         if item.name in seen:
@@ -139,6 +147,8 @@ def _ensure_unique(items: list, what: str) -> None:
 
 
 class DeploymentConfig(BaseModel):
+    """Deployment of `replicas` pods labeled `app: <name>`."""
+
     model_config = ConfigDict(extra="forbid")
 
     name: Dns1123Subdomain
@@ -148,6 +158,8 @@ class DeploymentConfig(BaseModel):
 
 
 class ServiceConfig(BaseModel):
+    """Service of a namespace."""
+
     model_config = ConfigDict(extra="forbid")
 
     name: Dns1035Label
@@ -157,6 +169,8 @@ class ServiceConfig(BaseModel):
 
 
 class PodConfig(BaseModel):
+    """Standalone pod labeled `app: <name>`."""
+
     model_config = ConfigDict(extra="forbid")
 
     name: Dns1123Subdomain
@@ -179,6 +193,7 @@ class ManifestConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def load(cls, data: Any, info: ValidationInfo) -> Any:
+        """Resolves the path and loads the objects of the manifest."""
         if isinstance(data, str):
             data = {"path": data}
         if not isinstance(data, dict) or not isinstance(data.get("path"), str):
@@ -242,6 +257,8 @@ def load_manifest_file(path: str) -> list[dict]:
 
 
 class NamespaceConfig(BaseModel):
+    """Namespace and the workloads created in it."""
+
     model_config = ConfigDict(extra="forbid")
 
     name: Dns1123Label
@@ -254,6 +271,7 @@ class NamespaceConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_uniqueness(self):
+        """Names are unique per kind."""
         _ensure_unique(self.deployments, "deployment")
         _ensure_unique(self.services, "service")
         _ensure_unique(self.pods, "pod")
@@ -261,9 +279,12 @@ class NamespaceConfig(BaseModel):
 
 
 class ClusterConfig(BaseModel):
+    """A cluster: runtime, CNI, network and workloads."""
+
     model_config = ConfigDict(extra="forbid")
 
-    name: str
+    # Used in file names and in the runtime commands (DNS label)
+    name: Dns1123Label
 
     runtime: RuntimeConfig
     cni: CNIConfig = Field(default=DEFAULT_CNI, validate_default=True)
@@ -281,6 +302,7 @@ class ClusterConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_network(self):
+        """CIDRs do not overlap, fit the nodes and suit the CNI."""
         cluster_cidr = ipaddress.IPv4Network(self.cluster_cidr)
         service_cidr = ipaddress.IPv4Network(self.service_cidr)
 
@@ -304,11 +326,14 @@ class ClusterConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_namespaces(self):
+        """Namespace names are unique."""
         _ensure_unique(self.namespaces, "namespace")
         return self
 
 
 class RootConfig(BaseModel):
+    """The whole configuration file."""
+
     model_config = ConfigDict(extra="forbid")
 
     # Cluster fields (all but `name`) copied into the clusters that do not set
@@ -338,6 +363,7 @@ class RootConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_uniqueness(self):
+        """Cluster names are unique."""
         # Validate unique cluster names
         cluster_names = set()
         for i, cluster in enumerate(self.clusters):
@@ -351,6 +377,7 @@ class RootConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_tools(self):
+        """Each tool spec is checked against the cluster names."""
         cluster_names = [cluster.name for cluster in self.clusters]
         for i, tool in enumerate(self.tools):
             try:

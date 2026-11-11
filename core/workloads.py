@@ -1,3 +1,5 @@
+"""Creation of the namespaces, manifests and workloads of the configuration."""
+
 from core.input import (
     ClusterConfig,
     DeploymentConfig,
@@ -42,11 +44,13 @@ def create_cluster_workloads(kubeconfig: str, config: ClusterConfig):
 def apply_manifest_file(
     kubeconfig: str, manifest: ManifestConfig, namespace: str = "default"
 ):
+    """Applies a manifest; namespaced objects default to `namespace`."""
     log.info("Applying manifest", path=manifest.path, objects=len(manifest.objects))
     apply_manifest(kubeconfig, manifest.objects, default_namespace=namespace)
 
 
 def create_namespace(kubeconfig: str, config: NamespaceConfig):
+    """Creates the namespace, then its manifests and workloads."""
     ensure_kubernetes_namespace(kubeconfig, config.name)
 
     for manifest in config.manifests:
@@ -63,6 +67,7 @@ def create_namespace(kubeconfig: str, config: NamespaceConfig):
 
 
 def create_deployment(kubeconfig: str, namespace: str, deployment: DeploymentConfig):
+    """Creates a deployment in `namespace`."""
     return create_kubernetes_deployment(
         kubeconfig_path=kubeconfig,
         deployment_name=deployment.name,
@@ -73,6 +78,7 @@ def create_deployment(kubeconfig: str, namespace: str, deployment: DeploymentCon
 
 
 def create_service(kubeconfig: str, namespace: str, service: ServiceConfig):
+    """Creates a service in `namespace`."""
     return create_kubernetes_service(
         kubeconfig_path=kubeconfig,
         service_name=service.name,
@@ -82,6 +88,7 @@ def create_service(kubeconfig: str, namespace: str, service: ServiceConfig):
 
 
 def create_pod(kubeconfig: str, namespace: str, pod: PodConfig):
+    """Creates a pod in `namespace`."""
     return create_kubernetes_pod(
         kubeconfig_path=kubeconfig,
         pod_name=pod.name,

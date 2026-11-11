@@ -47,7 +47,7 @@ their defaults).
 
 | Field | Default | Description |
 |---|---|---|
-| `name` | required | Unique cluster name. |
+| `name` | required | Unique cluster name: RFC 1123 label (lowercase letters, digits, `-`). |
 | `runtime` | required | [Runtime](#runtimes) creating the cluster. |
 | `cni` | `flannel` | [CNI](#cnis). |
 | `nodes` | `1` | Number of nodes; the first is the control plane. The i-th node is labeled `tier=worker-<i>`. |
@@ -98,7 +98,7 @@ runtime. Common parameters:
 
 | Parameter | Default | Description |
 |---|---|---|
-| `version` | per CNI | CNI version. |
+| `version` | per CNI | CNI version, without the leading `v` (e.g. `1.18.6`). |
 | `wait` | `true` | Wait for the CNI, the nodes and CoreDNS to be ready. |
 | `timeout` | `600` | Seconds to wait. |
 
@@ -213,7 +213,7 @@ through it. Cache and CA persist across runs in `<out-dir>/registry-proxy`.
 | `registries` | `registry.k8s.io`, `quay.io`, `ghcr.io`, `gcr.io` | Registries cached besides Docker Hub. |
 | `manifest_cache` | `true` | Cache the image manifests too (tags are not re-resolved upstream). |
 | `auth` | `[]` | Upstream credentials: `registry`, `username`, `password_env` (name of the environment variable holding the password). |
-| `extra_no_proxy` | `[]` | Hosts the nodes reach directly. |
+| `extra_no_proxy` | `[]` | Hosts, domain suffixes (`.example.com`) or CIDRs the nodes reach directly. |
 | `host_port` | `3128` | Port published on the host, only when a selected cluster is outside the docker network (minikube `kvm2`). Published on all interfaces. |
 | `timeout` | `120` | Seconds to wait for the proxy. |
 

@@ -1,3 +1,5 @@
+"""k3d runtime: k3s clusters of docker containers."""
+
 import yaml
 import os
 from typing import Literal
@@ -34,6 +36,8 @@ class K3dRuntimeSpec(BaseRuntimeSpec):
 
 
 class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
+    """k3s cluster created with k3d, on the shared docker network."""
+
     @property
     def provides_load_balancer(self) -> bool:
         # k3s ServiceLB (klipper-lb), unless disabled
@@ -65,13 +69,16 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
         kubeconfig_location = get_kubeconfig_location(self.name)
 
         os.makedirs(os.path.dirname(kubeconfig_location), exist_ok=True)
-        with open(kubeconfig_location, "w") as f:
+        # Cluster-admin credentials: readable by the owner only
+        fd = os.open(kubeconfig_location, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
             f.write(kubeconfig_content)
 
     def cleanup(self) -> None:
         run_command(["k3d", "cluster", "delete", self.name])
 
     def _get_kubeconfig_content(self) -> str:
+        """Kubeconfig of the cluster, from k3d."""
         result = run_command(["k3d", "kubeconfig", "get", self.name], capture=True)
         return result.stdout
 
@@ -85,6 +92,7 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
         install_cni_plugins(self._get_nodes(), plugins, CNI_PLUGINS_VERSION)
 
     def _get_nodes(self) -> list[str]:
+        """Names of the node containers."""
         containers = docker_client().containers.list(
             filters={"label": f"k3d.cluster={self.name}"}
         )
@@ -95,6 +103,7 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
         ]
 
     def _gen_k3s_server_args(self) -> list[str]:
+        """k3s server arguments: CIDRs, no built-in CNI, disabled components."""
         args = [
             f"--cluster-cidr={self.settings.cluster_cidr}",
             f"--service-cidr={self.settings.service_cidr}",
@@ -108,6 +117,7 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
         return args
 
     def _gen_config(self) -> dict:
+        """k3d configuration file."""
         conf = {
             "apiVersion": "k3d.io/v1alpha5",
             "kind": "Simple",

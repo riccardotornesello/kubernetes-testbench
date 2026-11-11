@@ -55,6 +55,42 @@ class ClusterValidationTest(ValidationTestCase):
         errors = self.validation_errors({"clusters": [cluster(foo=1)]})
         self.assert_error(errors, "clusters.0.foo", "Extra inputs")
 
+    def test_invalid_cluster_name(self):
+        # Used in file paths and runtime commands
+        for name in ("../etc", "Rome", "a_b", ""):
+            with self.subTest(name=name):
+                errors = self.validation_errors({"clusters": [cluster(name)]})
+                self.assert_error(errors, "clusters.0.name", "RFC 1123 label")
+
+    def test_invalid_cni_version(self):
+        for version in ("v3.30.3", "3.30", "latest"):
+            with self.subTest(version=version):
+                errors = self.validation_errors(
+                    {
+                        "clusters": [
+                            cluster(
+                                cni={"type": "calico", "spec": {"version": version}}
+                            )
+                        ]
+                    }
+                )
+                self.assert_error(errors, "clusters.0.cni.calico.spec.version")
+
+    def test_invalid_proxy_hosts(self):
+        for field in ("registries", "extra_no_proxy"):
+            with self.subTest(field=field):
+                errors = self.validation_errors(
+                    {
+                        "clusters": [cluster()],
+                        "tools": [
+                            {"type": "registry_proxy", "spec": {field: ["a b\nEND"]}}
+                        ],
+                    }
+                )
+                self.assert_error(
+                    errors, f"tools.0.registry_proxy.spec.{field}", "invalid host"
+                )
+
     def test_duplicate_cluster_names(self):
         errors = self.validation_errors({"clusters": [cluster("a"), cluster("a")]})
         self.assert_error(errors, "Duplicate cluster name", "'a'")

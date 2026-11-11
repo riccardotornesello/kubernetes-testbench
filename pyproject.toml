@@ -1,8 +1,9 @@
 [project]
 name = "testbench"
 version = "0.1.0"
-description = "Add your description here"
+description = "Local multi-cluster Kubernetes testbench (kind, k3d, minikube) with CNI and Liqo setup"
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
     "docker>=7.1.0",

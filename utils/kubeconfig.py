@@ -1,3 +1,5 @@
+"""Location of the kubeconfig files."""
+
 from core.paths import output_path
 
 

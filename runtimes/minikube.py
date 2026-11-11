@@ -1,3 +1,5 @@
+"""minikube runtime: VMs (kvm2 driver) or docker containers."""
+
 import os
 import shlex
 import subprocess
@@ -57,8 +59,11 @@ class MinikubeClusterSpec(BaseRuntimeSpec):
 
 
 class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
+    """Cluster created with minikube, one profile per cluster."""
+
     @property
     def _kubeconfig(self) -> str:
+        """Kubeconfig of the cluster."""
         return get_kubeconfig_location(self.name)
 
     def _run(
@@ -160,6 +165,7 @@ class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
             install_cni_plugins(self._get_nodes(), plugins, CNI_PLUGINS_VERSION)
 
     def _configure_node_proxy(self) -> None:
+        """Makes the container runtime of every node pull through the node proxy."""
         script = self.node_proxy_setup_script(
             service=CONTAINER_RUNTIME_SERVICES[self.spec.container_runtime]
         )

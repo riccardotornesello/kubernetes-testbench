@@ -37,6 +37,7 @@ class CommandError(subprocess.CalledProcessError):
 
 
 def _show_output() -> bool:
+    """Whether the command output is shown (DEBUG level)."""
     return logging.getLogger().isEnabledFor(logging.DEBUG)
 
 

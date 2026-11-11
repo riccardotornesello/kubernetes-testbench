@@ -1,1 +1,5 @@
-DOCKER_NETWORK_NAME = "kind"  # kind does not allow custom networks, so we use the default one for k3d clusters also
+"""Constants shared by the runtimes and the tools."""
+
+# Docker network shared by the clusters and the registry proxy. kind always
+# uses this one, so k3d and minikube (docker driver) join it too.
+DOCKER_NETWORK_NAME = "kind"

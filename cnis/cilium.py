@@ -1,3 +1,5 @@
+"""Cilium CNI, installed through the cilium CLI."""
+
 import ipaddress
 import os
 import tempfile
@@ -12,6 +14,8 @@ from utils.kubernetes_utils import get_api_server_endpoint
 
 
 class CiliumCNISpec(BaseCNISpec):
+    """Parameters of Cilium (`cni: {type: cilium, spec: ...}`)."""
+
     version: str = "1.18.6"
     # Replace kube-proxy with Cilium: the cluster is created without it
     kube_proxy_replacement: bool = False
@@ -45,6 +49,8 @@ class CiliumCNISpec(BaseCNISpec):
 
 
 class CiliumCNI(BaseCNI[CiliumCNISpec]):
+    """Installs Cilium with the cilium CLI."""
+
     WORKLOADS = {"kube-system": ["cilium", "cilium-operator"]}
 
     @property
@@ -81,6 +87,7 @@ class CiliumCNI(BaseCNI[CiliumCNISpec]):
             )
 
     def _gen_config(self) -> dict:
+        """Helm values of the Cilium chart."""
         values = {
             "routingMode": "tunnel",
             "tunnelProtocol": self.spec.tunnel_protocol,

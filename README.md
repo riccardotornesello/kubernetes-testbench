@@ -75,8 +75,32 @@ validated before any cluster is touched. Full reference:
 
 | Tool | Description | Requirements |
 |---|---|---|
-| `registry_proxy` | Caching proxy for container images, shared by the clusters: faster recreations, no Docker Hub rate limits. | - |
+| `registry_proxy` | Caching proxy for container images, shared by the clusters: faster recreations. Recommended to avoid the Docker Hub pull rate limit, but **not secure**: the nodes trust its CA (it intercepts their TLS traffic), and with minikube `kvm2` it is published on every host interface, reachable from the LAN. Use it only on trusted networks. | - |
 | `liqo` | Installs [Liqo](https://liqo.io) on the selected clusters, peers them and offloads namespaces. | `liqoctl` |
+
+## Networks
+
+| Network | Created by | Used by |
+|---|---|---|
+| `kind` docker network | the testbench, if missing | kind, k3d and minikube (`docker` driver) nodes, registry proxy |
+| `testbenchnet` libvirt network | minikube, if missing | minikube (`kvm2` driver) VMs |
+
+- **kind** always uses the `kind` docker network, so k3d and minikube
+  (`docker` driver) join it too: their clusters reach each other directly.
+- **k3d** clusters expose `LoadBalancer` services (k3s ServiceLB) on the
+  node addresses of the `kind` network.
+- **minikube `kvm2`** VMs are attached to the libvirt network set by the
+  `network` parameter (default `testbenchnet`), shared by the kvm2 clusters.
+  They reach the registry proxy through a port published on the host.
+- Clusters on the docker network and clusters on a libvirt network cannot
+  reach each other (blocked by the Docker and libvirt firewall rules): e.g.
+  they cannot be peered with Liqo.
+
+Pod and service CIDRs (`cluster_cidr`, `service_cidr`) are per cluster;
+peered clusters do not need different ones, but distinct CIDRs avoid the
+Liqo address remapping.
+
+**WARNING**: minikube `kvm2` clusters cannot reach other clusters on the docker network, so Liqo peerings between them are not possible. Use minikube `docker` driver instead. This should be addressed in a future release of this tool.
 
 ## Examples
 
@@ -94,3 +118,7 @@ validated before any cluster is touched. Full reference:
 - [docs/development.md](docs/development.md): architecture, execution flow,
   tool hooks, how to add a runtime, CNI or tool.
 - [TODO.md](TODO.md): known limitations and planned work.
+
+## License
+
+[Apache License 2.0](LICENSE).

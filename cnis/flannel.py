@@ -1,3 +1,5 @@
+"""Flannel CNI, installed from the kube-flannel manifest."""
+
 import json
 from typing import Literal, Optional
 
@@ -6,6 +8,8 @@ from utils.kubernetes_utils import apply_manifest, fetch_manifest
 
 
 class FlannelCNISpec(BaseCNISpec):
+    """Parameters of flannel (`cni: {type: flannel, spec: ...}`)."""
+
     version: str = "0.28.10"
     # https://github.com/flannel-io/flannel/blob/master/Documentation/backends.md
     backend: Literal["vxlan", "host-gw", "wireguard"] = "vxlan"
@@ -37,6 +41,7 @@ class FlannelCNI(BaseCNI[FlannelCNISpec]):
         apply_manifest(self.kubeconfig, self.apply_patches(objects))
 
     def _customize(self, obj: dict) -> dict:
+        """Applies the spec and the node selector requirements to a manifest object."""
         kind = obj["kind"]
         name = obj["metadata"]["name"]
 
@@ -65,6 +70,7 @@ class FlannelCNI(BaseCNI[FlannelCNISpec]):
         return obj
 
     def _gen_net_conf(self) -> dict:
+        """Content of the flannel net-conf.json."""
         return {
             "Network": self.settings.cluster_cidr,
             "EnableNFTables": self.spec.enable_nftables,

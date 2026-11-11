@@ -55,6 +55,7 @@ class StructuredLogger(logging.LoggerAdapter):
     def process(
         self, msg: Any, kwargs: MutableMapping[str, Any]
     ) -> tuple[Any, MutableMapping[str, Any]]:
+        """Moves the keyword arguments into the structured fields."""
         fields = {
             key: kwargs.pop(key) for key in list(kwargs) if key not in _LOGGING_KWARGS
         }
@@ -65,14 +66,17 @@ class StructuredLogger(logging.LoggerAdapter):
 
 
 def get_logger(name: str) -> StructuredLogger:
+    """Structured logger named `name`."""
     return StructuredLogger(logging.getLogger(name))
 
 
 def _record_fields(record: logging.LogRecord) -> dict[str, Any]:
+    """Structured fields of a record."""
     return getattr(record, FIELDS_ATTR, None) or {}
 
 
 def _timestamp(record: logging.LogRecord) -> str:
+    """UTC ISO 8601 timestamp of a record."""
     return (
         datetime.fromtimestamp(record.created, tz=timezone.utc)
         .isoformat(timespec="milliseconds")
@@ -99,6 +103,7 @@ class ConsoleFormatter(logging.Formatter):
 
     @staticmethod
     def _format_value(value: Any) -> str:
+        """Quotes the values containing spaces, quotes or '='."""
         text = str(value)
         if text == "" or any(c.isspace() or c in '"=' for c in text):
             return json.dumps(text)

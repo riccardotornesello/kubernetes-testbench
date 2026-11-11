@@ -1,3 +1,5 @@
+"""Retries with exponential backoff."""
+
 import random
 import time
 from collections.abc import Callable

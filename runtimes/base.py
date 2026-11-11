@@ -1,3 +1,5 @@
+"""Base class of the runtimes and the generic node options."""
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TypeVar, Generic
@@ -29,6 +31,7 @@ NODE_TIER_LABEL = "tier"
 
 
 def node_tier(index: int) -> str:
+    """Value of the tier label of the `index`-th node."""
     return f"worker-{index}"
 
 
@@ -161,10 +164,12 @@ class BaseRuntime(ABC, Generic[SpecT]):
         return "\n".join(lines) + "\n"
 
     def check_dependencies(self) -> None:
+        """Raises if a dependency of the runtime (e.g. its CLI) is missing."""
         pass
 
     @abstractmethod
     def init_cluster(self) -> None:
+        """Creates the cluster and writes its kubeconfig."""
         raise NotImplementedError("Subclasses must implement this method.")
 
     def install_cni_plugins(self, plugins: list[str]) -> None:
@@ -182,6 +187,7 @@ class BaseRuntime(ABC, Generic[SpecT]):
         pass
 
     def install_cni(self) -> None:
+        """Prepares the nodes, installs the CNI and waits for it if requested."""
         self.load_kernel_modules(self.cni.REQUIRED_KERNEL_MODULES)
         self.install_cni_plugins(self.cni.REQUIRED_CNI_PLUGINS)
         self.cni.install_cni()

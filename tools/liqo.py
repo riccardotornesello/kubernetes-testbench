@@ -1,3 +1,5 @@
+"""Liqo tool: installation, peering and namespace offloading."""
+
 import shutil
 from typing import List, Optional, Tuple
 
@@ -37,6 +39,8 @@ LIQOCTL_PROVIDERS = {
 
 
 class LiqoInstallationConfig(BaseModel):
+    """A cluster where Liqo is installed."""
+
     model_config = ConfigDict(extra="forbid")
 
     cluster: str
@@ -47,6 +51,7 @@ class LiqoInstallationConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_version(self):
+        """Rejects malformed development versions."""
         self.chart_version()
         return self
 
@@ -66,6 +71,8 @@ class LiqoInstallationConfig(BaseModel):
 
 
 class LiqoToolSpec(BaseToolSpec):
+    """Parameters of the Liqo tool."""
+
     installations: List[LiqoInstallationConfig] = Field(default_factory=list)
     peerings: List[Tuple[str, str]] = Field(default_factory=list)
     # Retry policy of `liqoctl install` (exponential backoff between attempts)
@@ -79,11 +86,14 @@ class LiqoToolSpec(BaseToolSpec):
         )
         if not_installed:
             raise ValueError(
-                f"peerings refer to clusters without a Liqo installation: {not_installed}"
+                "peerings refer to clusters without a Liqo installation: "
+                f"{not_installed}"
             )
 
 
 class LiqoTool(BaseTool[LiqoToolSpec]):
+    """Installs Liqo with liqoctl, peers the clusters and offloads namespaces."""
+
     def check_dependencies(self) -> None:
         if self.spec.installations and shutil.which("liqoctl") is None:
             raise RuntimeError("liqoctl is not installed or not found in PATH")
@@ -108,6 +118,7 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
             )
 
     def _get_installation(self, cluster: str) -> LiqoInstallationConfig | None:
+        """Installation of `cluster`, if any."""
         return next(
             (inst for inst in self.spec.installations if inst.cluster == cluster),
             None,
@@ -218,6 +229,7 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
         provider: str,
         provider_args: list[str],
     ) -> None:
+        """Runs liqoctl install, retried with exponential backoff."""
         repo_url, version = installation.chart_version()
         cluster_log = log.bind(cluster=installation.cluster)
 
@@ -250,6 +262,7 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
     def _peer_clusters(
         self, consumer: str, provider: str, gw_server_service_type: str
     ) -> None:
+        """Runs liqoctl peer: `consumer` uses the resources of `provider`."""
         command = [
             "liqoctl",
             "peer",
@@ -269,6 +282,7 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
         run_command(command)
 
     def _offload_namespace(self, cluster: str, namespace: str) -> None:
+        """Offloads `namespace` of `cluster`, creating it if missing."""
         kubeconfig = get_kubeconfig_location(cluster)
         # Create the namespace if it does not exist
         ensure_kubernetes_namespace(kubeconfig, namespace)
@@ -286,6 +300,7 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
 
 
 def _calico_skip_liqo_interfaces(resources: list[dict]) -> None:
+    """Calico patch: the node address is never a Liqo interface."""
     installation = find_object(resources, "Installation", "default")
     installation["spec"]["calicoNetwork"]["nodeAddressAutodetectionV4"] = {
         "skipInterface": "liqo.*"
