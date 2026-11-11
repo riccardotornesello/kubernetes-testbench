@@ -1,0 +1,32 @@
+# Applied in the namespace that lists it (`web`), since no namespace is set.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hello
+data:
+  message: "Hello from a manifest"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hello
+  template:
+    metadata:
+      labels:
+        app: hello
+    spec:
+      containers:
+        - name: hello
+          image: busybox:1.37
+          command: ["sh", "-c", "echo $MESSAGE; sleep infinity"]
+          env:
+            - name: MESSAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: hello
+                  key: message

@@ -1,91 +1,184 @@
+"""minikube runtime: VMs (kvm2 driver) or docker containers."""
+
 import os
-import shutil
+import shlex
 import subprocess
-import yaml
+from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import Field
 
-from cnis.base import BaseCNI
-from runtimes.base import BaseRuntime
+from runtimes.base import (
+    BaseRuntime,
+    BaseRuntimeSpec,
+    CNI_PLUGINS_VERSION,
+    NODE_TIER_LABEL,
+    node_tier,
+)
+from core.log import get_logger
+from utils.commands import run_command
+from utils.docker_utils import ensure_kernel_modules, install_cni_plugins
 from utils.kubeconfig import get_kubeconfig_location
-from utils.ip import get_main_ip
+from utils.kubernetes_utils import label_nodes
+
+log = get_logger(__name__)
 
 
-class MinikubeClusterSpec(BaseModel):
-    pass
+# API server port inside the minikube nodes
+API_SERVER_PORT = 8443
+
+# systemd service pulling the images, for each container runtime
+CONTAINER_RUNTIME_SERVICES = {
+    "containerd": "containerd",
+    "cri-o": "crio",
+    "docker": "docker",
+}
+
+
+class MinikubeClusterSpec(BaseRuntimeSpec):
+    # Kubernetes version (without the leading "v")
+    kubernetes_version: str = "1.30.0"
+    # kvm2: one VM per node. docker: one container per node.
+    driver: Literal["kvm2", "docker"] = "kvm2"
+    container_runtime: Literal["containerd", "cri-o", "docker"] = "containerd"
+    # Resources of each node (default: minikube defaults)
+    cpus: Optional[int] = Field(default=None, ge=2)
+    memory: Optional[str] = None  # e.g. "4g", "4096mb"
+    disk_size: Optional[str] = None  # e.g. "20g"
 
 
 class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
-    SUPPORTED_CNIS = ["flannel", "cilium", "calico", "calico_bpf"]
+    """Cluster created with minikube, one profile per cluster."""
 
-    def check_dependencies(self):
-        subprocess.run(
-            ["minikube", "version"],
-            check=True,
+    @property
+    def _kubeconfig(self) -> str:
+        """Kubeconfig of the cluster."""
+        return get_kubeconfig_location(self.name)
+
+    def _run(
+        self, args: list[str], capture: bool = False
+    ) -> subprocess.CompletedProcess[str]:
+        # minikube reads/writes the kubeconfig at $KUBECONFIG: point it to the
+        # kubeconfig of this cluster only, never to ~/.kube/config
+        env = {**os.environ, "KUBECONFIG": self._kubeconfig}
+        return run_command(
+            ["minikube", *args, "-p", self.name], env=env, capture=capture
         )
 
-    def init_cluster(self) -> None:
-        # Create the cluster using minikube CLI
+    @property
+    def network_type(self) -> Literal["docker", "libvirt"]:
+        return "libvirt" if self.spec.driver == "kvm2" else "docker"
 
-        command = [
-            "minikube",
+    def check_dependencies(self):
+        run_command(["minikube", "version"], capture=True)
+        if self.spec.driver == "kvm2":
+            # The testbench defines the libvirt network of the VMs
+            run_command(["virsh", "--version"], capture=True)
+
+    def init_cluster(self) -> None:
+        spec = self.spec
+        args = [
             "start",
-            "-p",
-            self.name,
             "--nodes",
             str(self.settings.nodes),
+            "--kubernetes-version",
+            f"v{spec.kubernetes_version}",
+            "--driver",
+            spec.driver,
+            "--container-runtime",
+            spec.container_runtime,
+            # Created by the testbench. kvm2 VMs also get an interface on the
+            # libvirt `default` network, used to reach the Internet.
+            "--network",
+            self.settings.network.name,
+            # The CNI is always installed by the testbench: the minikube
+            # built-in manifests ignore the CNI spec (e.g. flannel always uses
+            # 10.244.0.0/16, whatever the cluster CIDR is)
             "--cni",
-            self.settings.cni,  # TODO: suport calico_bpf
+            "false",
             "--service-cluster-ip-range",
             self.settings.service_cidr,
             "--extra-config",
-            "kubeadm.pod-network-cidr=" + self.settings.cluster_cidr,
-            "--container-runtime",
-            "containerd",
-            "--driver",
-            "kvm2",
-            "--network",
-            "testbenchnet",  # TODO: use common network for all runtimes
+            f"kubeadm.pod-network-cidr={self.settings.cluster_cidr}",
+            # Self-contained kubeconfig (no paths to ~/.minikube)
+            "--embed-certs",
+            # Nodes and system pods become Ready only after the CNI is installed
+            "--wait",
+            "apiserver",
         ]
 
-        if self.proxy_address is not None:
-            real_proxy_address = (
-                f"http://{get_main_ip()}:{self.proxy_address.split(':')[-1]}"
-            )
-            command.extend(["--docker-env", f"HTTP_PROXY={real_proxy_address}"])
-            command.extend(["--docker-env", f"HTTPS_PROXY={real_proxy_address}"])
-            command.extend(
-                [
-                    "--docker-env",
-                    "NO_PROXY=ttl.sh,storage.googleapis.com,localhost,127.0.0.1,0.0.0.0,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.local,.svc",
-                ]
-            )
+        if self.cni.replaces_kube_proxy:
+            args.extend(["--extra-config", "kubeadm.skip-phases=addon/kube-proxy"])
 
-        print(f"Creating minikube cluster with command: {' '.join(command)}")
+        for flag, value in (
+            ("--cpus", spec.cpus),
+            ("--memory", spec.memory),
+            ("--disk-size", spec.disk_size),
+        ):
+            if value is not None:
+                args.extend([flag, str(value)])
 
-        subprocess.run(
-            command,
-            check=True,
+        os.makedirs(os.path.dirname(self._kubeconfig), exist_ok=True)
+        self._run(args)
+
+        # minikube has no option to label every node differently
+        label_nodes(
+            self._kubeconfig,
+            {
+                node: {NODE_TIER_LABEL: node_tier(i)}
+                for i, node in enumerate(self._get_nodes())
+            },
         )
 
-        # Copy kubeconfig
-        kubeconfig_location = get_kubeconfig_location(self.name)
-        shutil.copyfile(os.path.expanduser("~/.kube/config"), kubeconfig_location)
+        if self.spec.driver == "kvm2":
+            self._route_pool()
+
+        if self.node_proxy is not None:
+            self._configure_node_proxy()
+
+    def _route_pool(self) -> None:
+        """
+        Routes the testbench networks through the host on every VM. The
+        default route of the VMs is on the libvirt `default` network (NAT):
+        without this route the other networks would be reached through it,
+        with a masqueraded source address. The DHCP server of the network
+        also pushes this route, but not every DHCP client applies it.
+        """
+        network = self.settings.network
+        command = f"sudo ip route replace {network.pool} via {network.gateway}"
+        for node in self._get_nodes():
+            self._run(["ssh", "-n", node, "--", command])
 
     def cleanup(self) -> None:
-        subprocess.run(
-            ["minikube", "delete", "-p", self.name],
-            check=True,
-        )
+        self._run(["delete"])
 
     def get_api_server_address(self) -> str:
-        kubeconfig_location = get_kubeconfig_location(self.name)
-        with open(kubeconfig_location) as f:
-            kubeconfig_content = yaml.safe_load(f)
-        return kubeconfig_content["clusters"][0]["cluster"]["server"]
+        result = self._run(["ip"], capture=True)
+        return f"https://{result.stdout.strip()}:{API_SERVER_PORT}"
 
-    def install_cni(self, cni: BaseCNI) -> None:
-        return
+    def _get_nodes(self) -> list[str]:
+        # Control plane first, then the workers (<name>-m02, <name>-m03, ...)
+        result = self._run(["node", "list"], capture=True)
+        return [line.split()[0] for line in result.stdout.splitlines() if line.strip()]
+
+    def load_kernel_modules(self, modules: list[str]) -> None:
+        # VM nodes already load them. Container nodes share the host kernel:
+        # loading on one is enough.
+        if self.spec.driver == "docker":
+            ensure_kernel_modules(self._get_nodes()[0], modules)
+
+    def install_cni_plugins(self, plugins: list[str]) -> None:
+        # The minikube ISO ships the reference CNI plugins. Only the missing
+        # ones are copied in the container nodes.
+        if self.spec.driver == "docker":
+            install_cni_plugins(self._get_nodes(), plugins, CNI_PLUGINS_VERSION)
+
+    def _configure_node_proxy(self) -> None:
+        """Makes the container runtime of every node pull through the node proxy."""
+        script = self.node_proxy_setup_script(
+            service=CONTAINER_RUNTIME_SERVICES[self.spec.container_runtime]
+        )
+        for node in self._get_nodes():
+            self._run(["ssh", "-n", node, "--", f"sudo sh -c {shlex.quote(script)}"])
 
 
 module = MinikubeCluster

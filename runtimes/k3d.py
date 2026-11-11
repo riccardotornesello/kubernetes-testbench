@@ -1,50 +1,56 @@
+"""k3d runtime: k3s clusters of docker containers."""
+
 import yaml
 import os
-import subprocess
+from typing import Literal
 
 from kubernetes import config, client
-from pydantic import BaseModel
+from pydantic import Field
 
-from runtimes.base import BaseRuntime
-from core.settings import DOCKER_NETWORK_NAME
-from core.cache import REGISTRY_PROXY_CA_VOLUME
+from runtimes.base import (
+    BaseRuntime,
+    BaseRuntimeSpec,
+    CNI_PLUGINS_VERSION,
+    NODE_PROXY_CA_PATH,
+    NODE_TIER_LABEL,
+    node_tier,
+)
+from utils.docker_utils import (
+    get_client as docker_client,
+    ensure_kernel_modules,
+    install_cni_plugins,
+)
 from utils.kubeconfig import get_kubeconfig_location
+from utils.commands import run_command
 
 
-class K3dRuntimeSpec(BaseModel):
+class K3dRuntimeSpec(BaseRuntimeSpec):
+    # Node image: determines the Kubernetes version
     image: str = "docker.io/rancher/k3s:v1.30.2-k3s2"
+    # k3s packaged components not to deploy (k3s --disable). servicelb
+    # provides the LoadBalancer services (used e.g. by the Liqo gateway).
+    disable: list[
+        Literal["traefik", "servicelb", "metrics-server", "local-storage"]
+    ] = Field(default_factory=list)
 
 
 class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
-    SUPPORTED_CNIS = ["flannel", "cilium", "calico", "calico_bpf"] # TODO: remove compatibility attribute
-    DEFAULT_CNI = "flannel"
+    """k3s cluster created with k3d."""
+
+    @property
+    def provides_load_balancer(self) -> bool:
+        # k3s ServiceLB (klipper-lb), unless disabled
+        return "servicelb" not in self.spec.disable
 
     def check_dependencies(self):
-        subprocess.run(
-            ["k3d", "--version"],
-            check=True,
-        )
+        run_command(["k3d", "--version"], capture=True)
 
     def init_cluster(self) -> None:
         cluster_config = self._gen_config()
         cluster_config_yaml = yaml.dump(cluster_config)
 
-        additional_args = []
-
-        # Disable flannel if another CNI is selected
-        # TODO: move to config generation
-        if self.settings.cni != self.DEFAULT_CNI:
-            additional_args.extend(
-                [
-                    "--k3s-arg",
-                    "--flannel-backend=none@server:*",
-                    "--k3s-arg",
-                    "--disable-network-policy@server:*",
-                ]
-            )
-
         # Create the cluster using k3d CLI
-        subprocess.run(
+        run_command(
             [
                 "k3d",
                 "cluster",
@@ -53,10 +59,8 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
                 "--config",
                 "-",
                 "--kubeconfig-update-default=false",
-            ]
-            + additional_args,
-            input=cluster_config_yaml.encode(),
-            check=True,
+            ],
+            input=cluster_config_yaml,
         )
 
         # Save kubeconfig content
@@ -64,56 +68,74 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
         kubeconfig_location = get_kubeconfig_location(self.name)
 
         os.makedirs(os.path.dirname(kubeconfig_location), exist_ok=True)
-        with open(kubeconfig_location, "w") as f:
+        # Cluster-admin credentials: readable by the owner only
+        fd = os.open(kubeconfig_location, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
             f.write(kubeconfig_content)
 
     def cleanup(self) -> None:
-        subprocess.run(
-            ["k3d", "cluster", "delete", self.name],
-            check=True,
-        )
+        run_command(["k3d", "cluster", "delete", self.name])
 
     def _get_kubeconfig_content(self) -> str:
-        result = subprocess.run(
-            ["k3d", "kubeconfig", "get", self.name],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+        """Kubeconfig of the cluster, from k3d."""
+        result = run_command(["k3d", "kubeconfig", "get", self.name], capture=True)
         return result.stdout
 
+    def load_kernel_modules(self, modules: list[str]) -> None:
+        # Nodes are containers sharing the host kernel: loading on one is enough
+        ensure_kernel_modules(self._get_nodes()[0], modules)
+
+    def install_cni_plugins(self, plugins: list[str]) -> None:
+        # k3s ships the CNI plugins in its own data dir, used only by the
+        # embedded flannel: copy them in /opt/cni/bin, used by the other CNIs.
+        install_cni_plugins(self._get_nodes(), plugins, CNI_PLUGINS_VERSION)
+
+    def _get_nodes(self) -> list[str]:
+        """Names of the node containers."""
+        containers = docker_client().containers.list(
+            filters={"label": f"k3d.cluster={self.name}"}
+        )
+        return [
+            c.name
+            for c in containers
+            if c.labels.get("k3d.role") in ("server", "agent")
+        ]
+
+    def _gen_k3s_server_args(self) -> list[str]:
+        """k3s server arguments: CIDRs, no built-in CNI, disabled components."""
+        args = [
+            f"--cluster-cidr={self.settings.cluster_cidr}",
+            f"--service-cidr={self.settings.service_cidr}",
+            # The CNI is always installed by the testbench
+            "--flannel-backend=none",
+            "--disable-network-policy",
+            *[f"--disable={component}" for component in self.spec.disable],
+        ]
+        if self.cni.replaces_kube_proxy:
+            args.append("--disable-kube-proxy")
+        return args
+
     def _gen_config(self) -> dict:
+        """k3d configuration file."""
         conf = {
             "apiVersion": "k3d.io/v1alpha5",
             "kind": "Simple",
             "image": self.spec.image,
             "servers": 1,
             "agents": self.settings.nodes - 1,
-            "network": DOCKER_NETWORK_NAME,
+            "network": self.settings.network.name,
             "options": {
                 "k3s": {
                     "extraArgs": [
-                        {
-                            "arg": f"--cluster-cidr={self.settings.cluster_cidr}",
-                            "nodeFilters": ["server:*"],
-                        },
-                        {
-                            "arg": f"--service-cidr={self.settings.service_cidr}",
-                            "nodeFilters": ["server:*"],
-                        },
+                        {"arg": arg, "nodeFilters": ["server:*"]}
+                        for arg in self._gen_k3s_server_args()
                     ],
                     "nodeLabels": [
                         {
-                            "label": "tier=worker-0",
-                            "nodeFilters": ["server:0"],
-                        },
-                        *[
-                            {
-                                "label": f"tier=worker-{i}",
-                                "nodeFilters": [f"agent:{i - 1}"],
-                            }
-                            for i in range(1, self.settings.nodes)
-                        ],
+                            "label": f"{NODE_TIER_LABEL}={node_tier(i)}",
+                            "nodeFilters": ["server:0" if i == 0 else f"agent:{i - 1}"],
+                        }
+                        for i in range(self.settings.nodes)
                     ],
                 }
             },
@@ -121,26 +143,30 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
             "volumes": [],
         }
 
-        if self.proxy_address is not None:
+        if self.node_proxy is not None:
+            # k3s (and its embedded containerd) reads the proxy from its
+            # environment, and the CA is mounted: set at creation time.
+            address = self.node_proxy.address
             conf["env"].extend(
                 [
                     {
-                        "envVar": f"HTTP_PROXY={self.proxy_address}",
+                        "envVar": f"HTTP_PROXY={address}",
                         "nodeFilters": ["all"],
                     },
                     {
-                        "envVar": f"HTTPS_PROXY={self.proxy_address}",
+                        "envVar": f"HTTPS_PROXY={address}",
                         "nodeFilters": ["all"],
                     },
                     {
-                        "envVar": "NO_PROXY='ttl.sh,storage.googleapis.com,localhost,127.0.0.1,0.0.0.0,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.local,.svc'",
+                        # Passed as-is to the container: no quotes
+                        "envVar": f"NO_PROXY={self.node_no_proxy()}",
                         "nodeFilters": ["all"],
                     },
                 ]
             )
             conf["volumes"].append(
                 {
-                    "volume": f"{REGISTRY_PROXY_CA_VOLUME}/ca.crt:/etc/ssl/certs/registry-proxy-ca.pem",
+                    "volume": f"{self.node_proxy.ca_file}:{NODE_PROXY_CA_PATH}",
                     "nodeFilters": ["all"],
                 }
             )
@@ -152,7 +178,7 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
         k8s_client = config.new_client_from_config(config_file=kubeconfig_location)
         v1 = client.CoreV1Api(k8s_client)
 
-        label_selector = "node-role.kubernetes.io/master"
+        label_selector = "node-role.kubernetes.io/control-plane"
 
         nodes = v1.list_node(label_selector=label_selector)
         for node in nodes.items:

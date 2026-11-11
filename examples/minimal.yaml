@@ -1,0 +1,5 @@
+# Smallest configuration: one kind cluster with the default CNI (flannel)
+# and default network settings.
+clusters:
+  - name: demo
+    runtime: kind
