@@ -15,7 +15,6 @@ from runtimes.base import (
     node_tier,
 )
 from core.log import get_logger
-from core.settings import DOCKER_NETWORK_NAME
 from utils.commands import run_command
 from utils.docker_utils import ensure_kernel_modules, install_cni_plugins
 from utils.kubeconfig import get_kubeconfig_location
@@ -34,14 +33,6 @@ CONTAINER_RUNTIME_SERVICES = {
     "docker": "docker",
 }
 
-# Network shared by the clusters of the testbench, for each driver: with kvm2
-# it is a libvirt network (created by minikube if missing), with docker the
-# network shared with the kind/k3d clusters and the registry proxy.
-DEFAULT_NETWORKS = {
-    "kvm2": "testbenchnet",
-    "docker": DOCKER_NETWORK_NAME,
-}
-
 
 class MinikubeClusterSpec(BaseRuntimeSpec):
     # Kubernetes version (without the leading "v")
@@ -49,9 +40,6 @@ class MinikubeClusterSpec(BaseRuntimeSpec):
     # kvm2: one VM per node. docker: one container per node.
     driver: Literal["kvm2", "docker"] = "kvm2"
     container_runtime: Literal["containerd", "cri-o", "docker"] = "containerd"
-    # Network the nodes are attached to (default: depends on the driver, see
-    # DEFAULT_NETWORKS). Clusters must share it to reach each other.
-    network: Optional[str] = None
     # Resources of each node (default: minikube defaults)
     cpus: Optional[int] = Field(default=None, ge=2)
     memory: Optional[str] = None  # e.g. "4g", "4096mb"
@@ -77,12 +65,14 @@ class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
         )
 
     @property
-    def on_docker_network(self) -> bool:
-        network = self.spec.network or DEFAULT_NETWORKS[self.spec.driver]
-        return self.spec.driver == "docker" and network == DOCKER_NETWORK_NAME
+    def network_type(self) -> Literal["docker", "libvirt"]:
+        return "libvirt" if self.spec.driver == "kvm2" else "docker"
 
     def check_dependencies(self):
         run_command(["minikube", "version"], capture=True)
+        if self.spec.driver == "kvm2":
+            # The testbench defines the libvirt network of the VMs
+            run_command(["virsh", "--version"], capture=True)
 
     def init_cluster(self) -> None:
         spec = self.spec
@@ -96,8 +86,10 @@ class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
             spec.driver,
             "--container-runtime",
             spec.container_runtime,
+            # Created by the testbench. kvm2 VMs also get an interface on the
+            # libvirt `default` network, used to reach the Internet.
             "--network",
-            spec.network or DEFAULT_NETWORKS[spec.driver],
+            self.settings.network.name,
             # The CNI is always installed by the testbench: the minikube
             # built-in manifests ignore the CNI spec (e.g. flannel always uses
             # 10.244.0.0/16, whatever the cluster CIDR is)
@@ -137,8 +129,24 @@ class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
             },
         )
 
+        if self.spec.driver == "kvm2":
+            self._route_pool()
+
         if self.node_proxy is not None:
             self._configure_node_proxy()
+
+    def _route_pool(self) -> None:
+        """
+        Routes the testbench networks through the host on every VM. The
+        default route of the VMs is on the libvirt `default` network (NAT):
+        without this route the other networks would be reached through it,
+        with a masqueraded source address. The DHCP server of the network
+        also pushes this route, but not every DHCP client applies it.
+        """
+        network = self.settings.network
+        command = f"sudo ip route replace {network.pool} via {network.gateway}"
+        for node in self._get_nodes():
+            self._run(["ssh", "-n", node, "--", command])
 
     def cleanup(self) -> None:
         self._run(["delete"])

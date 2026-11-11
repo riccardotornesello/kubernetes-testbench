@@ -429,5 +429,48 @@ class ExamplesTest(unittest.TestCase):
                 self.assertIsNotNone(validate_config_file(path))
 
 
+class NetworkValidationTest(ValidationTestCase):
+    def test_defaults(self):
+        cfg = self.assert_valid({"clusters": [cluster("a"), cluster("b")]})
+        self.assertEqual(cfg.network.cidr, "10.250.0.0/16")
+        self.assertIsNone(cfg.network.links)
+
+    def test_links(self):
+        cfg = self.assert_valid(
+            {
+                "clusters": [cluster("a"), cluster("b"), cluster("c")],
+                "network": {"cidr": "172.30.0.0/22", "links": [["a", "b"]]},
+            }
+        )
+        self.assertEqual(cfg.network.links, [("a", "b")])
+
+    def test_unknown_and_self_links(self):
+        errors = self.validation_errors(
+            {"clusters": [cluster("a")], "network": {"links": [["a", "x"]]}}
+        )
+        self.assert_error(errors, "network.links.0", "unknown clusters ['x']")
+        errors = self.validation_errors(
+            {"clusters": [cluster("a")], "network": {"links": [["a", "a"]]}}
+        )
+        self.assert_error(errors, "network.links", "with itself")
+
+    def test_pool_too_small(self):
+        errors = self.validation_errors(
+            {
+                "clusters": [cluster("a"), cluster("b")],
+                "network": {"cidr": "10.250.0.0/23"},
+            }
+        )
+        self.assert_error(errors, "does not contain 3 /24 subnets")
+
+    def test_pool_overlapping_cluster_cidrs(self):
+        errors = self.validation_errors(
+            {
+                "clusters": [cluster("a", cluster_cidr="10.250.0.0/16")],
+            }
+        )
+        self.assert_error(errors, "overlaps the cluster_cidr", "'a'")
+
+
 if __name__ == "__main__":
     unittest.main()

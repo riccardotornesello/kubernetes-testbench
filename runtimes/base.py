@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TypeVar, Generic
+from typing import Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict
 
@@ -47,11 +47,9 @@ class NodeProxy:
     (e.g. a caching registry proxy), trusting its CA.
     """
 
-    # URL of the proxy on the testbench docker network (DOCKER_NETWORK_NAME)
+    # URL of the proxy, on the infrastructure network (routed to every
+    # cluster network by the host)
     address: str
-    # URL of the proxy published on the host, for the nodes outside the docker
-    # network (e.g. VMs). None if not published.
-    host_address: str | None
     # Host path of the proxy CA certificate (PEM)
     ca_file: str
     # Path, relative to the proxy URL, from which the nodes download the CA
@@ -92,12 +90,13 @@ class BaseRuntime(ABC, Generic[SpecT]):
         self.node_proxy: NodeProxy | None = None
 
     @property
-    def on_docker_network(self) -> bool:
+    def network_type(self) -> Literal["docker", "libvirt"]:
         """
-        Whether the nodes are attached to the testbench docker network
-        (DOCKER_NETWORK_NAME), i.e. reach the containers on it directly.
+        Type of the network of the nodes (`settings.network`, created by the
+        testbench before init_cluster): a docker bridge network for container
+        nodes, a libvirt network for VM nodes.
         """
-        return True
+        return "docker"
 
     @property
     def provides_load_balancer(self) -> bool:
@@ -114,18 +113,6 @@ class BaseRuntime(ABC, Generic[SpecT]):
         `pre_cluster_init` hook), which applies it.
         """
         self.node_proxy = proxy
-
-    def node_proxy_address(self) -> str:
-        """URL of the node proxy as reachable from the nodes of this cluster."""
-        assert self.node_proxy is not None
-        if self.on_docker_network:
-            return self.node_proxy.address
-        if self.node_proxy.host_address is None:
-            raise RuntimeError(
-                f"Cluster {self.name}: the nodes are outside the docker network "
-                "and the proxy is not published on the host"
-            )
-        return self.node_proxy.host_address
 
     def node_no_proxy(self) -> str:
         """NO_PROXY value for the nodes, including the cluster CIDRs."""
@@ -145,7 +132,7 @@ class BaseRuntime(ABC, Generic[SpecT]):
         the proxy CA, sets the proxy environment of the service and restarts it.
         """
         assert self.node_proxy is not None
-        address = self.node_proxy_address()
+        address = self.node_proxy.address
         dropin_dir = f"/etc/systemd/system/{service}.service.d"
         lines = [
             "set -e",
@@ -203,6 +190,7 @@ class BaseRuntime(ABC, Generic[SpecT]):
     def get_api_server_address(self) -> str:
         """
         URL of the API server reachable from the nodes of the OTHER clusters
-        (i.e. the node address, not the port forwarded on the host).
+        (i.e. the node address on its network, not the port forwarded on the
+        host).
         """
         raise NotImplementedError("Subclasses must implement this method.")

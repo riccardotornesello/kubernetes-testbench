@@ -1,11 +1,12 @@
 # Configuration reference
 
-The configuration is a YAML file with three top-level fields:
+The configuration is a YAML file with four top-level fields:
 
 | Field | Required | Description |
 |---|---|---|
 | `clusters` | yes | List of [clusters](#clusters). |
 | `default` | no | Any cluster field except `name`, copied into every cluster that does not set it. |
+| `network` | no | Addresses and connectivity of the [node networks](#network). |
 | `tools` | no | List of [tools](#tools) installed on top of the clusters. |
 
 Unknown fields are rejected everywhere, and the whole file (including the
@@ -60,6 +61,29 @@ their defaults).
 contain a /24 for every node (more constraints may come from the CNI, see
 below).
 
+## `network`
+
+Every cluster has a network of its own (docker or libvirt, depending on the
+runtime), routed by the host without NAT. See the
+[README](../README.md#networks) for how it works and its requirements.
+
+| Field | Default | Description |
+|---|---|---|
+| `cidr` | `10.250.0.0/16` | Address pool of the networks: the first /24 is the infrastructure network (registry proxy), then one /24 per cluster, in configuration order. Must contain a /24 for each of them and must not overlap any `cluster_cidr` or `service_cidr`. |
+| `links` | every pair | Pairs of clusters whose nodes reach each other (both directions). `[]` isolates every cluster. Every cluster always reaches the infrastructure network. |
+
+```yaml
+network:
+  cidr: 172.30.0.0/20
+  links:
+    - [rome, milan]
+```
+
+With this configuration and clusters `rome`, `milan`, `turin` (in this
+order): infrastructure `172.30.0.0/24`, `rome` `172.30.1.0/24`, `milan`
+`172.30.2.0/24`, `turin` `172.30.3.0/24`; `turin` reaches neither `rome`
+nor `milan`.
+
 ## Runtimes
 
 ### `kind`
@@ -82,13 +106,14 @@ below).
 | `kubernetes_version` | `1.30.0` | Kubernetes version. |
 | `driver` | `kvm2` | `kvm2` or `docker`. |
 | `container_runtime` | `containerd` | `containerd`, `cri-o`, `docker`. |
-| `network` | `testbenchnet` (kvm2), `kind` (docker) | Network of the nodes. Clusters must share a network to reach each other. |
 | `cpus` | minikube default | CPUs per node (≥ 2). |
 | `memory` | minikube default | Memory per node, e.g. `4g`. |
 | `disk_size` | minikube default | Disk per node, e.g. `20g`. |
 
-kind, k3d and minikube with the docker driver share the `kind` docker
-network, so their clusters can reach each other.
+The nodes are attached to the network of the cluster, `testbench-<name>`:
+a docker network for kind, k3d and minikube `docker`, a libvirt network for
+minikube `kvm2` (whose VMs also have an interface on the libvirt `default`
+network, used to reach the Internet).
 
 ## CNIs
 
@@ -204,7 +229,9 @@ manifests:
 Caching registry proxy
 ([rpardini/docker-registry-proxy](https://github.com/rpardini/docker-registry-proxy))
 shared by every cluster: the nodes of the selected clusters pull their images
-through it. Cache and CA persist across runs in `<out-dir>/registry-proxy`.
+through it. It runs on the infrastructure network (`testbench_infra`),
+routed to every cluster network, and is never published on the host. Cache
+and CA persist across runs in `<out-dir>/registry-proxy`.
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -214,7 +241,6 @@ through it. Cache and CA persist across runs in `<out-dir>/registry-proxy`.
 | `manifest_cache` | `true` | Cache the image manifests too (tags are not re-resolved upstream). |
 | `auth` | `[]` | Upstream credentials: `registry`, `username`, `password_env` (name of the environment variable holding the password). |
 | `extra_no_proxy` | `[]` | Hosts, domain suffixes (`.example.com`) or CIDRs the nodes reach directly. |
-| `host_port` | `3128` | Port published on the host, only when a selected cluster is outside the docker network (minikube `kvm2`). Published on all interfaces. |
 | `timeout` | `120` | Seconds to wait for the proxy. |
 
 ```yaml

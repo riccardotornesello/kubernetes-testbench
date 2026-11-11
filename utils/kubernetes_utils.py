@@ -267,3 +267,45 @@ def label_nodes(kubeconfig_path: str, labels: dict[str, dict[str, str]]) -> None
     core_v1 = client.CoreV1Api(api_client=k8s_client)
     for node, node_labels in labels.items():
         core_v1.patch_node(node, {"metadata": {"labels": node_labels}})
+
+
+# Label of the Liqo virtual nodes: not real nodes of the cluster
+LIQO_VIRTUAL_NODE_LABEL = ("liqo.io/type", "virtual-node")
+NODE_ROLE_PREFIX = "node-role.kubernetes.io/"
+
+
+def list_node_addresses(kubeconfig_path: str) -> list[dict[str, str]]:
+    """
+    Name, roles, labels and InternalIP of every node (Liqo virtual nodes
+    excluded), sorted by name.
+    """
+    k8s_client = config.new_client_from_config(config_file=kubeconfig_path)
+    core_v1 = client.CoreV1Api(api_client=k8s_client)
+    result = []
+    for node in core_v1.list_node().items:
+        labels = node.metadata.labels or {}
+        key, value = LIQO_VIRTUAL_NODE_LABEL
+        if labels.get(key) == value:
+            continue
+        roles = sorted(
+            label[len(NODE_ROLE_PREFIX) :]
+            for label in labels
+            if label.startswith(NODE_ROLE_PREFIX)
+        )
+        address = next(
+            (
+                a.address
+                for a in (node.status.addresses or [])
+                if a.type == "InternalIP"
+            ),
+            "",
+        )
+        result.append(
+            {
+                "name": node.metadata.name,
+                "roles": ",".join(roles) or "worker",
+                "labels": labels,
+                "ip": address,
+            }
+        )
+    return sorted(result, key=lambda n: n["name"])

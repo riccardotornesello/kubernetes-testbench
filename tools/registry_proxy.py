@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from core.log import get_logger
 from core.paths import output_path
-from core.settings import DOCKER_NETWORK_NAME
+from core.settings import INFRA_NETWORK_NAME
 from core.types import Settings
 from runtimes.base import NodeProxy
 from tools.base import (
@@ -22,8 +22,7 @@ from tools.base import (
     BaseToolSpec,
     check_known_clusters,
 )
-from utils.docker_utils import ensure_docker_container, ensure_docker_network
-from utils.ip import get_main_ip
+from utils.docker_utils import ensure_container_connected, ensure_docker_container
 
 log = get_logger(__name__)
 
@@ -84,9 +83,6 @@ class RegistryProxyToolSpec(BaseToolSpec):
     auth: List[RegistryAuth] = Field(default_factory=list)
     # Destinations the nodes reach without the proxy, besides the defaults
     extra_no_proxy: List[str] = Field(default_factory=list)
-    # Host port where the proxy is published, only if some node is outside
-    # the docker network (e.g. minikube kvm2). Reachable from the LAN.
-    host_port: int = Field(default=CONTAINER_PORT, gt=0, lt=65536)
     # Seconds to wait for the proxy to be ready
     timeout: int = Field(default=120, gt=0)
 
@@ -120,6 +116,10 @@ class RegistryProxyTool(BaseTool[RegistryProxyToolSpec]):
         """Whether the nodes of `cluster` pull through the proxy."""
         return self.spec.clusters is None or cluster in self.spec.clusters
 
+    @property
+    def uses_infra_network(self) -> bool:
+        return self.spec.clusters != []
+
     def check_dependencies(self) -> None:
         missing = [
             a.password_env for a in self.spec.auth if a.password_env not in os.environ
@@ -135,14 +135,9 @@ class RegistryProxyTool(BaseTool[RegistryProxyToolSpec]):
         all_runtimes: dict[str, AnyRuntime],
         all_cnis: dict[str, AnyCNI],
     ) -> None:
-        runtimes = [r for name, r in all_runtimes.items() if self._selected(name)]
-        if not runtimes:
+        if not any(self._selected(name) for name in all_runtimes):
             return
-
-        # Publish the proxy on the host only if some node cannot reach it on
-        # the docker network
-        publish = any(not r.on_docker_network for r in runtimes)
-        self.proxy = self._start(publish)
+        self.proxy = self._start()
 
     def pre_cluster_init(
         self, settings: Settings, runtime: AnyRuntime, cni: AnyCNI
@@ -163,14 +158,10 @@ class RegistryProxyTool(BaseTool[RegistryProxyToolSpec]):
             )
         return env
 
-    def _start(self, publish: bool) -> NodeProxy:
-        # main.py creates the network only if some cluster is attached to it:
-        # the proxy needs it anyway (e.g. every cluster on minikube kvm2)
-        ensure_docker_network(DOCKER_NETWORK_NAME)
+    def _start(self) -> NodeProxy:
         ca_dir, cache_dir = output_path(*CA_SUBDIR), output_path(*CACHE_SUBDIR)
 
         environment = self._environment()
-        ports = {f"{CONTAINER_PORT}/tcp": self.spec.host_port} if publish else {}
         volumes = {
             ca_dir: {"bind": "/ca", "mode": "rw"},
             cache_dir: {"bind": "/docker_mirror_cache", "mode": "rw"},
@@ -182,41 +173,37 @@ class RegistryProxyTool(BaseTool[RegistryProxyToolSpec]):
                 {
                     "image": self.spec.image,
                     "env": environment,
-                    "ports": ports,
                     "volumes": volumes,
+                    "network": INFRA_NETWORK_NAME,
                 },
                 sort_keys=True,
             ).encode()
         ).hexdigest()[:16]
 
         log.info(
-            "Starting registry proxy",
-            container=CONTAINER_NAME,
-            image=self.spec.image,
-            published=publish,
+            "Starting registry proxy", container=CONTAINER_NAME, image=self.spec.image
         )
         container = ensure_docker_container(
             image=self.spec.image,
             name=CONTAINER_NAME,
             environment=environment,
-            network=DOCKER_NETWORK_NAME,
+            network=INFRA_NETWORK_NAME,
             volumes=volumes,
-            ports=ports,
             labels={CONFIG_LABEL: config_hash},
         )
+        # Disconnected when the infrastructure network is recreated (e.g. new
+        # address pool)
+        container = ensure_container_connected(container, INFRA_NETWORK_NAME)
 
         networks = container.attrs["NetworkSettings"]["Networks"]
-        ip = networks.get(DOCKER_NETWORK_NAME, {}).get("IPAddress")
+        ip = networks.get(INFRA_NETWORK_NAME, {}).get("IPAddress")
         if not ip:
             raise RuntimeError(
-                f"Registry proxy not connected to network {DOCKER_NETWORK_NAME}"
+                f"Registry proxy not connected to network {INFRA_NETWORK_NAME}"
             )
 
         proxy = NodeProxy(
             address=f"http://{ip}:{CONTAINER_PORT}",
-            host_address=(
-                f"http://{get_main_ip()}:{self.spec.host_port}" if publish else None
-            ),
             ca_file=os.path.join(ca_dir, "ca.crt"),
             no_proxy=[*DEFAULT_NO_PROXY, *self.spec.extra_no_proxy],
         )

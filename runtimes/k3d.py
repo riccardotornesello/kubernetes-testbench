@@ -20,7 +20,6 @@ from utils.docker_utils import (
     ensure_kernel_modules,
     install_cni_plugins,
 )
-from core.settings import DOCKER_NETWORK_NAME
 from utils.kubeconfig import get_kubeconfig_location
 from utils.commands import run_command
 
@@ -36,7 +35,7 @@ class K3dRuntimeSpec(BaseRuntimeSpec):
 
 
 class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
-    """k3s cluster created with k3d, on the shared docker network."""
+    """k3s cluster created with k3d."""
 
     @property
     def provides_load_balancer(self) -> bool:
@@ -124,7 +123,7 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
             "image": self.spec.image,
             "servers": 1,
             "agents": self.settings.nodes - 1,
-            "network": DOCKER_NETWORK_NAME,
+            "network": self.settings.network.name,
             "options": {
                 "k3s": {
                     "extraArgs": [
@@ -147,7 +146,7 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
         if self.node_proxy is not None:
             # k3s (and its embedded containerd) reads the proxy from its
             # environment, and the CA is mounted: set at creation time.
-            address = self.node_proxy_address()
+            address = self.node_proxy.address
             conf["env"].extend(
                 [
                     {

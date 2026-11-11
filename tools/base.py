@@ -66,6 +66,15 @@ class BaseTool(ABC, Generic[SpecT]):
     def __init__(self, spec: SpecT) -> None:
         self.spec: SpecT = spec
 
+    @property
+    def uses_infra_network(self) -> bool:
+        """
+        Whether the tool runs containers on the infrastructure network
+        (core.settings.INFRA_NETWORK_NAME): when true, the testbench creates
+        it before before_all_operations and routes it to every cluster.
+        """
+        return False
+
     def check_dependencies(self) -> None:
         # Raise if a dependency (e.g. a CLI) of the tool is missing
         pass

@@ -80,21 +80,87 @@ def get_container(container_name: str) -> docker.models.containers.Container | N
         return None
 
 
+# Bridge option of Docker >= 28: NAT towards the outside, but no rule
+# dropping the packets routed to the containers from other interfaces (the
+# testbench networks reach each other through the host routing)
+GATEWAY_MODE_OPTION = "com.docker.network.bridge.gateway_mode_ipv4"
+GATEWAY_MODE = "nat-unprotected"
+
+
+def server_version() -> tuple[int, ...]:
+    """Version of the Docker daemon, e.g. (29, 1, 3)."""
+    version = get_client().version()["Version"]
+    return tuple(
+        int(part) for part in version.split("-")[0].split(".") if part.isdigit()
+    )
+
+
+def firewall_backend() -> str:
+    """
+    Firewall backend of the Docker daemon: `iptables` (possibly
+    `iptables+firewalld`) or `nftables`. Daemons older than 29 do not report
+    it and only support iptables.
+    """
+    info = get_client().info()
+    return ((info.get("FirewallBackend") or {}).get("Driver")) or "iptables"
+
+
 def ensure_docker_network(
     network_name: str,
-    driver: str = "bridge",
+    subnet: str,
+    gateway: str,
 ) -> docker.models.networks.Network:
-    """Network `network_name`, created if missing."""
+    """
+    Bridge network `network_name` with the given subnet and gateway (the
+    host address on it), created if missing. An existing network with
+    another configuration is recreated: the containers attached to it are
+    disconnected first.
+    """
+    options = {GATEWAY_MODE_OPTION: GATEWAY_MODE} if server_version() >= (28,) else {}
+
     network = get_network(network_name)
     if network is not None:
-        return network
+        config = network.attrs.get("IPAM", {}).get("Config") or [{}]
+        current_options = network.attrs.get("Options") or {}
+        if (
+            network.attrs.get("Driver") == "bridge"
+            and config[0].get("Subnet") == subnet
+            and config[0].get("Gateway") == gateway
+            and all(current_options.get(k) == v for k, v in options.items())
+        ):
+            return network
 
-    network = get_client().networks.create(
+        log.info("Network configuration changed, recreating it", network=network_name)
+        network.reload()
+        for container in network.containers:
+            log.info(
+                "Disconnecting container",
+                network=network_name,
+                container=container.name,
+            )
+            network.disconnect(container, force=True)
+        network.remove()
+
+    ipam = docker.types.IPAMConfig(
+        pool_configs=[docker.types.IPAMPool(subnet=subnet, gateway=gateway)]
+    )
+    return get_client().networks.create(
         name=network_name,
-        driver=driver,
+        driver="bridge",
+        ipam=ipam,
+        options=options,
         check_duplicate=True,
     )
-    return network
+
+
+def ensure_container_connected(
+    container: docker.models.containers.Container, network_name: str
+) -> docker.models.containers.Container:
+    """Connects `container` to `network_name` if needed, returning it refreshed."""
+    if network_name not in container.attrs["NetworkSettings"]["Networks"]:
+        get_client().networks.get(network_name).connect(container)
+        container.reload()
+    return container
 
 
 def get_network(network_name: str) -> docker.models.networks.Network | None:

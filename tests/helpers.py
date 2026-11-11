@@ -5,7 +5,7 @@ import os
 import tempfile
 import unittest
 
-from core.types import Settings
+from core.types import NodeNetwork, Settings
 from core.input import validate_data
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -19,6 +19,9 @@ def make_settings(**overrides) -> Settings:
         "nodes": 2,
         "cluster_cidr": "10.244.0.0/16",
         "service_cidr": "10.96.0.0/16",
+        "network": NodeNetwork(
+            name="testbench-test", cidr="10.250.1.0/24", pool="10.250.0.0/16"
+        ),
     }
     values.update(overrides)
     return Settings(**values)

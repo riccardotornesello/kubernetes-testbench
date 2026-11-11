@@ -14,7 +14,6 @@ from tests.helpers import make_settings
 
 PROXY = NodeProxy(
     address="http://proxy:3128",
-    host_address="http://192.168.1.10:3128",
     ca_file="/out/ca.crt",
     no_proxy=["localhost"],
 )
@@ -31,20 +30,25 @@ def make_runtime(cls, spec, nodes: int = 3, bpf: bool = False, **settings):
 
 
 class NodeProxyTest(unittest.TestCase):
-    def test_address_on_docker_network(self):
-        runtime = make_runtime(KindCluster, KindClusterSpec())
-        runtime.set_node_proxy(PROXY)
-        self.assertEqual(runtime.node_proxy_address(), "http://proxy:3128")
-
-    def test_address_outside_docker_network(self):
-        runtime = make_runtime(MinikubeCluster, MinikubeClusterSpec(driver="kvm2"))
-        self.assertFalse(runtime.on_docker_network)
-        runtime.set_node_proxy(PROXY)
-        self.assertEqual(runtime.node_proxy_address(), "http://192.168.1.10:3128")
-
-        runtime.set_node_proxy(NodeProxy("http://proxy:3128", None, "/out/ca.crt"))
-        with self.assertRaisesRegex(RuntimeError, "not published on the host"):
-            runtime.node_proxy_address()
+    def test_network_type(self):
+        self.assertEqual(
+            make_runtime(KindCluster, KindClusterSpec()).network_type, "docker"
+        )
+        self.assertEqual(
+            make_runtime(K3dRuntime, K3dRuntimeSpec()).network_type, "docker"
+        )
+        self.assertEqual(
+            make_runtime(
+                MinikubeCluster, MinikubeClusterSpec(driver="kvm2")
+            ).network_type,
+            "libvirt",
+        )
+        self.assertEqual(
+            make_runtime(
+                MinikubeCluster, MinikubeClusterSpec(driver="docker")
+            ).network_type,
+            "docker",
+        )
 
     def test_no_proxy_includes_cluster_cidrs(self):
         runtime = make_runtime(KindCluster, KindClusterSpec())
@@ -66,6 +70,16 @@ class NodeProxyTest(unittest.TestCase):
 
 
 class KindTest(unittest.TestCase):
+    def test_network(self):
+        runtime = make_runtime(KindCluster, KindClusterSpec())
+        with (
+            mock.patch("runtimes.kind.run_command") as run,
+            mock.patch("runtimes.kind.get_kubeconfig_location", return_value="/k"),
+        ):
+            runtime.init_cluster()
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(env["KIND_EXPERIMENTAL_DOCKER_NETWORK"], "testbench-test")
+
     def test_config(self):
         config = make_runtime(
             KindCluster, KindClusterSpec(image="kindest/node:v1.31.0")
@@ -118,7 +132,7 @@ class K3dTest(unittest.TestCase):
         runtime = make_runtime(K3dRuntime, K3dRuntimeSpec(disable=["traefik"]))
         config = runtime._gen_config()
         self.assertEqual((config["servers"], config["agents"]), (1, 2))
-        self.assertEqual(config["network"], "kind")
+        self.assertEqual(config["network"], "testbench-test")
         args = [a["arg"] for a in config["options"]["k3s"]["extraArgs"]]
         self.assertEqual(
             args,
@@ -184,19 +198,25 @@ class MinikubeTest(unittest.TestCase):
         core.paths._output_dir = self._old_output_dir
         self._tmp.cleanup()
 
-    def start_args(self, runtime: MinikubeCluster) -> list[str]:
+    def run_init(self, runtime: MinikubeCluster) -> list[list[str]]:
+        """Commands run by init_cluster."""
         with (
             mock.patch("runtimes.minikube.run_command") as run,
             mock.patch("runtimes.minikube.label_nodes"),
-            mock.patch.object(MinikubeCluster, "_get_nodes", return_value=["test"]),
+            mock.patch.object(
+                MinikubeCluster, "_get_nodes", return_value=["test", "test-m02"]
+            ),
         ):
             runtime.init_cluster()
-        args, kwargs = run.call_args
-        self.assertEqual(
-            kwargs["env"]["KUBECONFIG"],
-            os.path.join(self._tmp.name, "kubeconfigs", "test.yaml"),
-        )
-        return args[0]
+        for _, kwargs in run.call_args_list:
+            self.assertEqual(
+                kwargs["env"]["KUBECONFIG"],
+                os.path.join(self._tmp.name, "kubeconfigs", "test.yaml"),
+            )
+        return [args[0] for args, _ in run.call_args_list]
+
+    def start_args(self, runtime: MinikubeCluster) -> list[str]:
+        return self.run_init(runtime)[0]
 
     def flag(self, args: list[str], name: str) -> list[str]:
         return [args[i + 1] for i, a in enumerate(args) if a == name]
@@ -209,7 +229,7 @@ class MinikubeTest(unittest.TestCase):
         self.assertEqual(args[-2:], ["-p", "test"])
         self.assertEqual(self.flag(args, "--nodes"), ["3"])
         self.assertEqual(self.flag(args, "--kubernetes-version"), ["v1.30.0"])
-        self.assertEqual(self.flag(args, "--network"), ["testbenchnet"])
+        self.assertEqual(self.flag(args, "--network"), ["testbench-test"])
         self.assertEqual(self.flag(args, "--cni"), ["false"])
         self.assertEqual(
             self.flag(args, "--service-cluster-ip-range"), ["10.96.0.0/16"]
@@ -222,10 +242,23 @@ class MinikubeTest(unittest.TestCase):
         self.assertEqual(self.flag(args, "--memory"), ["4g"])
         self.assertEqual(self.flag(args, "--disk-size"), [])
 
-    def test_docker_driver_uses_shared_network(self):
+    def test_kvm2_routes_pool_through_host(self):
+        commands = self.run_init(make_runtime(MinikubeCluster, MinikubeClusterSpec()))
+        route = "sudo ip route replace 10.250.0.0/16 via 10.250.1.1"
+        self.assertEqual(
+            commands[1:],
+            [
+                ["minikube", "ssh", "-n", node, "--", route, "-p", "test"]
+                for node in ("test", "test-m02")
+            ],
+        )
+
+    def test_docker_driver_uses_cluster_network(self):
         runtime = make_runtime(MinikubeCluster, MinikubeClusterSpec(driver="docker"))
-        self.assertTrue(runtime.on_docker_network)
-        self.assertEqual(self.flag(self.start_args(runtime), "--network"), ["kind"])
+        commands = self.run_init(runtime)
+        self.assertEqual(self.flag(commands[0], "--network"), ["testbench-test"])
+        # No route: the default route of the container nodes is the host
+        self.assertEqual(len(commands), 1)
 
     def test_skip_kube_proxy(self):
         args = self.start_args(

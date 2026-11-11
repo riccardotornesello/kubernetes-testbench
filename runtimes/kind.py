@@ -1,5 +1,7 @@
 """kind runtime: clusters of docker containers."""
 
+import os
+
 import yaml
 
 from runtimes.base import (
@@ -9,7 +11,6 @@ from runtimes.base import (
     NODE_TIER_LABEL,
     node_tier,
 )
-from core.settings import DOCKER_NETWORK_NAME
 from utils.docker_utils import (
     get_client as docker_client,
     ensure_kernel_modules,
@@ -49,6 +50,11 @@ class KindCluster(BaseRuntime[KindClusterSpec]):
                 # No --wait: nodes become Ready only after the CNI is installed
             ],
             input=cluster_config_yaml,
+            # Network of the nodes (default: the `kind` network)
+            env={
+                **os.environ,
+                "KIND_EXPERIMENTAL_DOCKER_NETWORK": self.settings.network.name,
+            },
         )
 
         if self.node_proxy is not None:
@@ -59,10 +65,11 @@ class KindCluster(BaseRuntime[KindClusterSpec]):
 
     def get_api_server_address(self) -> str:
         # The kubeconfig points to the port forwarded on 127.0.0.1: use the
-        # control plane container address on the shared docker network.
+        # control plane container address on the cluster network.
         container = docker_client().containers.get(f"{self.name}-control-plane")
         networks = container.attrs["NetworkSettings"]["Networks"]
-        return f"https://{networks[DOCKER_NETWORK_NAME]['IPAddress']}:6443"
+        address = networks[self.settings.network.name]["IPAddress"]
+        return f"https://{address}:6443"
 
     def _get_nodes(self) -> list[str]:
         """Names of the node containers."""

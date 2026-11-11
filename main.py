@@ -6,17 +6,25 @@ import sys
 from core.input import validate_config_file, ClusterConfig
 from core.log import get_logger, setup_logging
 from core.paths import DEFAULT_OUTPUT_DIR, set_output_dir
-from core.settings import DOCKER_NETWORK_NAME
 from core.modules import runtimes, cnis, tools as tool_modules
+from core.networking import (
+    NetworkPlan,
+    apply_firewall,
+    check_host,
+    ensure_networks,
+    plan_networks,
+    uses_firewall,
+)
+from core.summary import report_nodes
 from core.types import Settings
 from core.workloads import create_cluster_workloads
-from utils.docker_utils import ensure_docker_network
+from utils.firewall import ensure_privileges
 from utils.kubeconfig import get_kubeconfig_location
 
 log = get_logger("testbench")
 
 
-def create_settings(config: ClusterConfig) -> Settings:
+def create_settings(config: ClusterConfig, plan: NetworkPlan) -> Settings:
     """Settings of a cluster, shared by its runtime, CNI and the tools."""
     return Settings(
         runtime=config.runtime.type,
@@ -25,23 +33,24 @@ def create_settings(config: ClusterConfig) -> Settings:
         nodes=config.nodes,
         cluster_cidr=config.cluster_cidr,
         service_cidr=config.service_cidr,
+        network=plan.clusters[config.name],
     )
 
 
-def create_cni_instance(config: ClusterConfig):
+def create_cni_instance(config: ClusterConfig, plan: NetworkPlan):
     """CNI of the cluster."""
     return cnis[config.cni.type](
         cluster_name=config.name,
-        settings=create_settings(config),
+        settings=create_settings(config, plan),
         spec=config.cni.spec,
     )
 
 
-def create_runtime_instance(config: ClusterConfig, cni):
+def create_runtime_instance(config: ClusterConfig, plan: NetworkPlan, cni):
     """Runtime of the cluster, which installs `cni`."""
     return runtimes[config.runtime.type](
         name=config.name,
-        settings=create_settings(config),
+        settings=create_settings(config, plan),
         spec=config.runtime.spec,
         cni=cni,
     )
@@ -52,18 +61,19 @@ def create_tool_instance(tool_config):
     return tool_modules[tool_config.type](spec=tool_config.spec)
 
 
-def main(config_file: str) -> None:
+def main(config_file: str, log_format: str = "console") -> None:
     # Fetch configuration
     cfg = validate_config_file(config_file)
     if cfg is None:
         sys.exit(1)
 
+    plan = plan_networks(cfg.network, [c.name for c in cfg.clusters])
     tools = [create_tool_instance(tool_cfg) for tool_cfg in cfg.tools]
     clusters = {}
     for cluster_cfg in cfg.clusters:
-        cni = create_cni_instance(cluster_cfg)
+        cni = create_cni_instance(cluster_cfg, plan)
         clusters[cluster_cfg.name] = {
-            "runtime": create_runtime_instance(cluster_cfg, cni),
+            "runtime": create_runtime_instance(cluster_cfg, plan, cni),
             "cni": cni,
         }
 
@@ -77,6 +87,9 @@ def main(config_file: str) -> None:
         tools=",".join(tool_cfg.type for tool_cfg in cfg.tools) or "-",
     )
 
+    # Host compatibility (firewall backend, distribution), before anything
+    check_host(all_runtimes.values())
+
     log.info("Checking dependencies")
     for cluster in clusters.values():
         cluster["runtime"].check_dependencies()
@@ -84,16 +97,18 @@ def main(config_file: str) -> None:
     for tool in tools:
         tool.check_dependencies()
 
+    infra = any(tool.uses_infra_network for tool in tools)
+    firewall = uses_firewall(plan, all_runtimes.values(), infra)
+    if firewall:
+        ensure_privileges()
+
     for name, cluster in clusters.items():
         log.info("Deleting existing cluster", cluster=name)
         cluster["runtime"].cleanup()
 
-    # Shared docker network of the clusters attached to it (kind, k3d,
-    # minikube docker driver), created in advance so that every runtime finds
-    # it, whatever the cluster order (kind and minikube reuse an existing one)
-    if any(runtime.on_docker_network for runtime in all_runtimes.values()):
-        log.info("Ensuring docker network", network=DOCKER_NETWORK_NAME)
-        ensure_docker_network(DOCKER_NETWORK_NAME)
+    # One network per cluster (and one for the shared infrastructure), created
+    # after the old clusters are deleted (minikube may delete its network)
+    ensure_networks(plan, all_runtimes, infra)
 
     # Hook: ONCE in total, before any cluster is created (shared infrastructure)
     for tool in tools:
@@ -102,6 +117,11 @@ def main(config_file: str) -> None:
             all_runtimes=all_runtimes,
             all_cnis=all_cnis,
         )
+
+    # Routing between the networks, before the nodes need it (e.g. to pull
+    # through the registry proxy)
+    if firewall:
+        apply_firewall(plan, all_runtimes, infra)
 
     # Per-cluster phase: clusters are created sequentially, and every tool hook
     # inside this loop runs once PER CLUSTER (for every tool).
@@ -154,6 +174,7 @@ def main(config_file: str) -> None:
         create_cluster_workloads(kubeconfig_path, cluster_cfg)
 
     log.info("Testbench ready")
+    report_nodes(all_runtimes, log_format)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -190,7 +211,7 @@ if __name__ == "__main__":
     setup_logging(level=args.log_level, fmt=args.log_format)
     set_output_dir(args.out_dir)
     try:
-        main(args.config_file)
+        main(args.config_file, args.log_format)
     except KeyboardInterrupt:
         log.warning("Interrupted")
         sys.exit(130)

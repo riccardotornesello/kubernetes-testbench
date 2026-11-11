@@ -12,6 +12,8 @@ CNIs and tools. For the configuration format see
 | `core/input.py` | Configuration models (pydantic) and validation. |
 | `core/modules.py` | Discovery of runtimes, CNIs and tools. |
 | `core/workloads.py` | Creation of namespaces, manifests and workloads. |
+| `core/networking.py` | Node networks: addressing plan, host checks, creation, routing. |
+| `core/summary.py` | Node addresses shown at the end of the run. |
 | `core/log.py`, `core/paths.py` | Structured logging, output directory. |
 | `runtimes/` | One module per runtime, base class in `runtimes/base.py`. |
 | `cnis/` | One module per CNI, base class in `cnis/base.py`. |
@@ -19,6 +21,8 @@ CNIs and tools. For the configuration format see
 | `utils/kubernetes_utils.py` | Kubernetes API helpers (apply, wait, create). |
 | `utils/kubernetes_models.py` | Validation of dicts against the Kubernetes client models. |
 | `utils/commands.py` | `run_command`: execution of the external commands. |
+| `utils/docker_utils.py`, `utils/libvirt_utils.py` | Docker containers and networks, libvirt networks. |
+| `utils/firewall.py` | iptables chains routing the testbench networks. |
 
 ## Components
 
@@ -52,7 +56,9 @@ A runtime (`runtimes/base.py`, `BaseRuntime`) creates a cluster of
 `tier=worker-<i>`, and writes a kubeconfig with only that cluster to
 `utils.kubeconfig.get_kubeconfig_location(name)`. The cluster is always
 created **without** its built-in CNI, and without kube-proxy when
-`cni.replaces_kube_proxy`.
+`cni.replaces_kube_proxy`. Its nodes are attached to `settings.network`
+(`NodeNetwork`: `name`, `cidr`, `gateway`, `pool`), created by the
+testbench before `init_cluster` with the type given by `network_type`.
 
 | Member | Description |
 |---|---|
@@ -62,9 +68,9 @@ created **without** its built-in CNI, and without kube-proxy when
 | `check_dependencies()` | Raises if a dependency (e.g. the CLI) is missing. |
 | `install_cni_plugins(plugins)` | Copies the reference CNI plugins into the nodes, if the image lacks them. |
 | `load_kernel_modules(modules)` | Loads kernel modules on the nodes (container-based runtimes). |
-| `on_docker_network` | Whether the nodes are on the shared `kind` docker network. |
+| `network_type` | `docker` (default) or `libvirt`: type of the network created for the nodes. |
 | `provides_load_balancer` | Whether `LoadBalancer` services get a reachable address. |
-| `set_node_proxy(NodeProxy)` | Generic option set by tools before `init_cluster`: the container runtime of the nodes pulls through an HTTP(S) proxy, trusting its CA. Helpers: `node_proxy_address()`, `node_no_proxy()`, `node_proxy_setup_script(service)`. |
+| `set_node_proxy(NodeProxy)` | Generic option set by tools before `init_cluster`: the container runtime of the nodes pulls through an HTTP(S) proxy, trusting its CA. Helpers: `node_no_proxy()`, `node_proxy_setup_script(service)`. |
 
 Runtimes contain no tool-specific logic: tools customize them only through
 generic options like `set_node_proxy`.
@@ -120,7 +126,7 @@ tool acting only on some clusters filters by itself (e.g. Liqo by its
 | Hook | Called | Arguments | Typical use |
 |---|---|---|---|
 | `check_dependencies()` | once | | Fail early on missing CLIs or env vars. |
-| `before_all_operations` | once, before any cluster | `all_settings`, `all_runtimes`, `all_cnis` (by cluster name) | Shared infrastructure (registry proxy container). |
+| `before_all_operations` | once, before any cluster | `all_settings`, `all_runtimes`, `all_cnis` (by cluster name) | Shared infrastructure (registry proxy container, on the infrastructure network if `uses_infra_network`). |
 | `pre_cluster_init` | per cluster | `settings`, `runtime`, `cni` | Runtime options (`runtime.set_node_proxy`). No kubeconfig yet. |
 | `post_cluster_init` | per cluster | same | Cluster up, kubeconfig written, no CNI. |
 | `pre_cni_install` | per cluster | same | CNI customizations (`add_node_selector_requirement`, `add_patch`). |
@@ -138,12 +144,14 @@ tool hooks, grey = internal steps.
 flowchart TD
     A([Start: python main.py config.yaml]) --> B[Load and validate YAML config<br/>merge defaults, validate specs and manifests]
     B --> C[Instantiate tools, runtimes and CNIs]
-    C --> D[Check runtime, CNI and tool dependencies]
+    C --> C2[Host checks<br/>Docker firewall backend, Fedora warning]
+    C2 --> D[Check runtime, CNI and tool dependencies<br/>sudo -v if firewall rules are needed]
     D --> E[Delete existing clusters<br/>runtime.cleanup for every cluster]
-    E --> E2[Ensure the shared kind docker network]
+    E --> E2[Ensure the networks<br/>one per cluster, infrastructure if used]
     E2 --> F[tool.before_all_operations<br/>once in total<br/>registry_proxy: start proxy container]
+    F --> F2[Apply the firewall rules<br/>routing between the networks]
 
-    F --> L{{For each cluster}}
+    F2 --> L{{For each cluster}}
     L --> H[tool.pre_cluster_init<br/>registry_proxy: runtime.set_node_proxy]
     H --> I[Create cluster<br/>runtime.init_cluster + kubeconfig]
     I --> J[tool.post_cluster_init]
@@ -155,13 +163,14 @@ flowchart TD
     N -- no --> O[tool.after_all_operations<br/>once in total<br/>Liqo: liqoctl peer + offload namespaces]
 
     O --> P[For every cluster: namespaces, cluster manifests,<br/>then namespace manifests, deployments, services, pods]
-    P --> Q([End])
+    P --> R[Print the node addresses of every cluster]
+    R --> Q([End])
 
     classDef internal fill:#e0e0e0,stroke:#616161,color:#000
     classDef k8s fill:#bbdefb,stroke:#1565c0,color:#000
     classDef tool fill:#ffe0b2,stroke:#ef6c00,color:#000
 
-    class A,B,C,D,L,N,Q internal
+    class A,B,C,C2,D,F2,L,N,R,Q internal
     class E,E2,I,K,P k8s
     class F,H,J,J2,M,O tool
 ```
@@ -175,9 +184,9 @@ stops the run (clusters already created are left in place).
 
 `before_all_operations` starts (or reuses, if its configuration did not
 change) the [docker-registry-proxy](https://github.com/rpardini/docker-registry-proxy)
-container on the `kind` docker network, with cache and CA in
-`<out-dir>/registry-proxy`. The port is published on the host only if a
-selected cluster is outside the docker network (minikube `kvm2`).
+container on the infrastructure network (`uses_infra_network`), with cache
+and CA in `<out-dir>/registry-proxy`. Every node reaches it through the host
+routing; it is never published on the host.
 `pre_cluster_init` calls `runtime.set_node_proxy(...)` on the selected
 clusters; kind and minikube configure the proxy on every node after creation,
 k3d at creation.
@@ -196,12 +205,37 @@ k3d at creation.
 | Runtime | `liqoctl install` provider | Notes |
 |---|---|---|
 | `kind` | `kind` | |
-| `k3d` | `k3s` | `--api-server-url` (control plane address on the docker network), `--pod-cidr`, `--service-cidr`. |
+| `k3d` | `k3s` | `--api-server-url` (control plane address on the cluster network), `--pod-cidr`, `--service-cidr`. |
 | `minikube` | `kubeadm` | CIDRs read from the kube-controller-manager; API server URL set to the node address (`--set-string apiServer.address=...`). |
 
 The gateway of the provider is exposed through a `LoadBalancer` service if
 `runtime.provides_load_balancer` (k3d unless `servicelb` is disabled),
 `NodePort` otherwise.
+
+## Networks
+
+`core/networking.py`:
+
+- `plan_networks` assigns the /24s of `network.cidr`: the first to the
+  infrastructure network (`testbench_infra`), then one per cluster
+  (`testbench-<name>`), and resolves `network.links` (default: every pair).
+- `check_host` runs first: with docker networks it warns on Fedora
+  (`/etc/os-release`) and requires the iptables firewall backend of Docker
+  (`docker info`).
+- `ensure_networks` creates the docker networks
+  (`docker_utils.ensure_docker_network`, `nat-unprotected` gateway mode) and
+  the libvirt ones (`libvirt_utils.ensure_libvirt_network`, `open` forward
+  mode, DHCP pushing the route to the pool and no default route), after the
+  old clusters are deleted. A network with a different configuration is
+  recreated.
+- `apply_firewall` (only if `uses_firewall`: more than one network, or a
+  libvirt one) builds the chains of `utils/firewall.py` and applies them
+  with `iptables` (through `sudo` if not root), after
+  `before_all_operations` and before the first cluster.
+
+minikube `kvm2` also sets the route to the pool on every VM
+(`ip route replace <pool> via <gateway>`), since not every DHCP client
+applies the classless static route option.
 
 ## Configuration validation
 
@@ -291,7 +325,8 @@ uv run python -m unittest tests.test_input -v
 | `test_input.py` | Configuration validation: clusters, `default` (errors reported once), workloads, names, manifests (relative/absolute paths), tools, examples. |
 | `test_kubernetes_models.py` | Conversion and validation against the Kubernetes client models. |
 | `test_cnis.py` | CNI configuration generation, tool customizations (affinity, patches), CNI-specific validation. |
-| `test_runtimes.py` | kind/k3d configuration, minikube arguments, node proxy. |
+| `test_runtimes.py` | kind/k3d configuration, minikube arguments and routes, network types, node proxy. |
+| `test_networking.py` | Network plan, firewall rules and their application, host checks, libvirt network, node summary. |
 | `test_liqo.py` | Liqo spec validation, CNI customizations, `liqoctl` commands, retries. |
 | `test_commands.py` | `run_command`: output capture, errors. |
 | `test_retry.py` | Exponential backoff. |
@@ -331,6 +366,9 @@ Every scenario runs on each selected runtime (`KindE2E`, `K3dE2E`,
 | `test_liqo` | Two peered clusters: virtual node on the consumer, offloaded pod running on it. Needs `liqoctl`. |
 
 Every run must exit successfully and log no error (`--log-format json`).
+Scenarios with more than one network (`test_registry_proxy`, `test_liqo`)
+apply firewall rules: run the tests as root or with a valid `sudo`
+timestamp (`sudo -v` before).
 Clusters are named `tbe2e-<runtime>-<scenario>`, so they never clash with
 other clusters, and are deleted at the end of each test. On a failed run the
 logs (`stderr` in the failure message, command output in `stdout.log`) are

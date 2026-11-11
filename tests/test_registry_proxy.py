@@ -2,6 +2,7 @@ import unittest
 from unittest import mock
 
 import core.paths
+from core.settings import INFRA_NETWORK_NAME
 from tools.registry_proxy import (
     CONFIG_LABEL,
     RegistryProxyTool,
@@ -14,33 +15,44 @@ class RegistryProxyStartTest(unittest.TestCase):
         self._old_output_dir = core.paths._output_dir
         self.addCleanup(setattr, core.paths, "_output_dir", self._old_output_dir)
 
-    def start(self, output_dir: str, publish: bool = False, **spec) -> dict:
+    def start(self, output_dir: str, **spec) -> dict:
         """Arguments of the proxy container started with `output_dir`."""
         core.paths.set_output_dir(output_dir)
         container = mock.Mock()
         container.attrs = {
-            "NetworkSettings": {"Networks": {"kind": {"IPAddress": "172.18.0.9"}}}
+            "NetworkSettings": {
+                "Networks": {INFRA_NETWORK_NAME: {"IPAddress": "10.250.0.2"}}
+            }
         }
         tool = RegistryProxyTool(RegistryProxyToolSpec(**spec))
         with (
-            mock.patch("tools.registry_proxy.ensure_docker_network"),
             mock.patch(
                 "tools.registry_proxy.ensure_docker_container", return_value=container
             ) as ensure,
-            mock.patch("tools.registry_proxy.get_main_ip", return_value="192.168.1.10"),
+            mock.patch(
+                "tools.registry_proxy.ensure_container_connected",
+                side_effect=lambda c, _: c,
+            ) as connect,
             mock.patch.object(RegistryProxyTool, "_wait_ready"),
         ):
-            proxy = tool._start(publish)
+            proxy = tool._start()
+        connect.assert_called_once_with(container, INFRA_NETWORK_NAME)
         return {"proxy": proxy, **ensure.call_args.kwargs}
 
     def test_node_proxy(self):
-        started = self.start("/out", publish=True)
+        started = self.start("/out")
         proxy = started["proxy"]
-        self.assertEqual(proxy.address, "http://172.18.0.9:3128")
-        self.assertEqual(proxy.host_address, "http://192.168.1.10:3128")
+        self.assertEqual(proxy.address, "http://10.250.0.2:3128")
         self.assertEqual(proxy.ca_file, "/out/registry-proxy/ca/ca.crt")
-        self.assertEqual(started["ports"], {"3128/tcp": 3128})
-        self.assertIsNone(self.start("/out")["proxy"].host_address)
+        self.assertEqual(started["network"], INFRA_NETWORK_NAME)
+        # Reached through the host routing: never published on the host
+        self.assertNotIn("ports", started)
+
+    def test_uses_infra_network(self):
+        self.assertTrue(RegistryProxyTool(RegistryProxyToolSpec()).uses_infra_network)
+        self.assertFalse(
+            RegistryProxyTool(RegistryProxyToolSpec(clusters=[])).uses_infra_network
+        )
 
     def test_volumes_in_output_dir(self):
         volumes = self.start("/out")["volumes"]
@@ -55,7 +67,6 @@ class RegistryProxyStartTest(unittest.TestCase):
         self.assertEqual(base, label(self.start("/out")))
         # A container of another output directory serves another CA: recreated
         self.assertNotEqual(base, label(self.start("/other")))
-        self.assertNotEqual(base, label(self.start("/out", publish=True)))
         self.assertNotEqual(base, label(self.start("/out", manifest_cache=False)))
 
 

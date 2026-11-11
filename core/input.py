@@ -3,7 +3,7 @@
 import ipaddress
 import os
 import re
-from typing import Annotated, List, Literal, Optional, Any, Union
+from typing import Annotated, List, Literal, Optional, Any, Tuple, Union
 
 import yaml
 from pydantic import (
@@ -20,7 +20,9 @@ from pydantic import (
 )
 
 from core.log import get_logger
+from core.settings import DEFAULT_NETWORK_POOL
 from core.modules import tool_specs, cni_specs, runtime_specs
+from tools.base import check_known_clusters
 from utils.kubernetes_models import (
     KubernetesValidationError,
     model_name_for,
@@ -331,6 +333,36 @@ class ClusterConfig(BaseModel):
         return self
 
 
+class NetworkConfig(BaseModel):
+    """
+    Networks of the nodes: every cluster has a network of its own, and the
+    host routes between them (without NAT) according to `links`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Address pool of the networks: the first /24 is reserved to the shared
+    # infrastructure (registry proxy), then one /24 per cluster, in
+    # configuration order
+    cidr: str = DEFAULT_NETWORK_POOL
+    # Pairs of clusters whose nodes reach each other (both directions).
+    # Omitted: every cluster reaches every other one. An empty list isolates
+    # every cluster.
+    links: Optional[List[Tuple[str, str]]] = None
+
+    _validate_cidr = field_validator("cidr")(_validate_ipv4_network)
+
+    @field_validator("links")
+    @classmethod
+    def _validate_links(
+        cls, links: Optional[List[Tuple[str, str]]]
+    ) -> Optional[List[Tuple[str, str]]]:
+        for a, b in links or []:
+            if a == b:
+                raise ValueError(f"link of cluster '{a}' with itself")
+        return links
+
+
 class RootConfig(BaseModel):
     """The whole configuration file."""
 
@@ -340,6 +372,7 @@ class RootConfig(BaseModel):
     # them. Validated on its own by `validate_data`.
     default: Optional[dict] = None
     clusters: List[ClusterConfig]
+    network: NetworkConfig = Field(default_factory=NetworkConfig)
     tools: List[ToolConfig] = Field(default_factory=list)
 
     @model_validator(mode="before")
@@ -373,6 +406,33 @@ class RootConfig(BaseModel):
                 )
             cluster_names.add(cluster.name)
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_network(self):
+        """The pool fits the clusters and does not overlap their CIDRs."""
+        pool = ipaddress.IPv4Network(self.network.cidr)
+        # One /24 for the infrastructure, one per cluster
+        needed = len(self.clusters) + 1
+        if pool.prefixlen > 24 or 2 ** (24 - pool.prefixlen) < needed:
+            raise ValueError(
+                f"network.cidr {pool} does not contain {needed} /24 subnets "
+                f"(one for the infrastructure, one per cluster)"
+            )
+        for cluster in self.clusters:
+            for field in ("cluster_cidr", "service_cidr"):
+                cidr = ipaddress.IPv4Network(getattr(cluster, field))
+                if pool.overlaps(cidr):
+                    raise ValueError(
+                        f"network.cidr {pool} overlaps the {field} {cidr} of "
+                        f"cluster '{cluster.name}'"
+                    )
+        names = [cluster.name for cluster in self.clusters]
+        for i, link in enumerate(self.network.links or []):
+            try:
+                check_known_clusters(list(link), names)
+            except ValueError as e:
+                raise ValueError(f"network.links.{i}: {e}") from e
         return self
 
     @model_validator(mode="after")
