@@ -1,0 +1,52 @@
+# Two k3d clusters peered with Liqo: `rome` (consumer) offloads the `shared`
+# namespace to `milan` (provider). Images are pulled through a caching
+# registry proxy.
+default:
+  runtime: k3d
+  nodes: 2
+  # Different from the provider ones, so that Liqo does not need to remap them
+  cluster_cidr: "10.200.0.0/16"
+  service_cidr: "10.71.0.0/16"
+
+clusters:
+  - name: rome
+    namespaces:
+      - name: shared
+        pods:
+          # Runs on a local node
+          - name: local
+            spec:
+              containers:
+                - name: tester
+                  image: riccardotornesello/hello-world-http-server:v2.1.0-tester
+              nodeSelector:
+                tier: worker-0
+          # Runs on milan, through the Liqo virtual node
+          - name: remote
+            spec:
+              containers:
+                - name: tester
+                  image: riccardotornesello/hello-world-http-server:v2.1.0-tester
+              nodeSelector:
+                liqo.io/remote-cluster-id: milan
+        services:
+          - name: remote
+            spec:
+              selector:
+                app: remote
+              ports:
+                - port: 80
+  - name: milan
+    cluster_cidr: "10.201.0.0/16"
+    service_cidr: "10.72.0.0/16"
+
+tools:
+  - registry_proxy
+  - type: liqo
+    spec:
+      installations:
+        - cluster: rome
+          offloadings: [shared]
+        - cluster: milan
+      peerings:
+        - [rome, milan]

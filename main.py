@@ -7,7 +7,7 @@ from core.paths import DEFAULT_OUTPUT_DIR, set_output_dir
 from core.settings import DOCKER_NETWORK_NAME
 from core.modules import runtimes, cnis, tools as tool_modules
 from core.types import Settings
-from core.namespaces import create_cluster_workloads
+from core.workloads import create_cluster_workloads
 from utils.docker_utils import ensure_docker_network
 from utils.kubeconfig import get_kubeconfig_location
 

@@ -1,0 +1,35 @@
+# One k3d cluster with Calico and some workloads: a deployment exposed by a
+# service, a standalone pod and a YAML manifest.
+clusters:
+  - name: demo
+    runtime: k3d
+    cni: calico
+    nodes: 2
+    namespaces:
+      - name: web
+        # Relative to this file
+        manifests:
+          - manifests/hello.yaml
+        deployments:
+          - name: nginx
+            replicas: 2
+            pod_spec:
+              containers:
+                - name: nginx
+                  image: nginx:1.27
+        services:
+          - name: nginx
+            spec:
+              selector:
+                app: nginx
+              ports:
+                - port: 80
+        pods:
+          - name: client
+            spec:
+              containers:
+                - name: client
+                  image: curlimages/curl:8.11.1
+                  command: ["sleep", "infinity"]
+              nodeSelector:
+                tier: worker-1
