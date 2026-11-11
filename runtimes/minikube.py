@@ -14,6 +14,7 @@ from runtimes.base import (
 )
 from core.log import get_logger
 from core.settings import DOCKER_NETWORK_NAME
+from utils.commands import run_command
 from utils.docker_utils import ensure_kernel_modules, install_cni_plugins
 from utils.kubeconfig import get_kubeconfig_location
 from utils.kubernetes_utils import label_nodes
@@ -60,12 +61,14 @@ class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
     def _kubeconfig(self) -> str:
         return get_kubeconfig_location(self.name)
 
-    def _run(self, args: list[str], **kwargs) -> subprocess.CompletedProcess:
+    def _run(
+        self, args: list[str], capture: bool = False
+    ) -> subprocess.CompletedProcess[str]:
         # minikube reads/writes the kubeconfig at $KUBECONFIG: point it to the
         # kubeconfig of this cluster only, never to ~/.kube/config
         env = {**os.environ, "KUBECONFIG": self._kubeconfig}
-        return subprocess.run(
-            ["minikube", *args, "-p", self.name], env=env, check=True, **kwargs
+        return run_command(
+            ["minikube", *args, "-p", self.name], env=env, capture=capture
         )
 
     @property
@@ -74,10 +77,7 @@ class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
         return self.spec.driver == "docker" and network == DOCKER_NETWORK_NAME
 
     def check_dependencies(self):
-        subprocess.run(
-            ["minikube", "version"],
-            check=True,
-        )
+        run_command(["minikube", "version"], capture=True)
 
     def init_cluster(self) -> None:
         spec = self.spec
@@ -121,11 +121,6 @@ class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
                 args.extend([flag, str(value)])
 
         os.makedirs(os.path.dirname(self._kubeconfig), exist_ok=True)
-        log.debug(
-            "Running minikube",
-            cluster=self.name,
-            command=shlex.join(["minikube", *args, "-p", self.name]),
-        )
         self._run(args)
 
         # minikube has no option to label every node differently
@@ -144,12 +139,12 @@ class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
         self._run(["delete"])
 
     def get_api_server_address(self) -> str:
-        result = self._run(["ip"], capture_output=True, text=True)
+        result = self._run(["ip"], capture=True)
         return f"https://{result.stdout.strip()}:{API_SERVER_PORT}"
 
     def _get_nodes(self) -> list[str]:
         # Control plane first, then the workers (<name>-m02, <name>-m03, ...)
-        result = self._run(["node", "list"], capture_output=True, text=True)
+        result = self._run(["node", "list"], capture=True)
         return [line.split()[0] for line in result.stdout.splitlines() if line.strip()]
 
     def load_kernel_modules(self, modules: list[str]) -> None:
@@ -169,9 +164,7 @@ class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
             service=CONTAINER_RUNTIME_SERVICES[self.spec.container_runtime]
         )
         for node in self._get_nodes():
-            self._run(
-                ["ssh", "-n", node, "--", f"sudo sh -c {shlex.quote(script)}"]
-            )
+            self._run(["ssh", "-n", node, "--", f"sudo sh -c {shlex.quote(script)}"])
 
 
 module = MinikubeCluster

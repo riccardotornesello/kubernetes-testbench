@@ -102,7 +102,9 @@ class RegistryProxyTool(BaseTool[RegistryProxyToolSpec]):
         return self.spec.clusters is None or cluster in self.spec.clusters
 
     def check_dependencies(self) -> None:
-        missing = [a.password_env for a in self.spec.auth if a.password_env not in os.environ]
+        missing = [
+            a.password_env for a in self.spec.auth if a.password_env not in os.environ
+        ]
         if missing:
             raise RuntimeError(
                 f"registry_proxy: environment variables not set: {missing}"

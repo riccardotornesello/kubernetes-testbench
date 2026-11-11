@@ -260,24 +260,6 @@ class NamespaceConfig(BaseModel):
         return self
 
 
-class CommonConfig(BaseModel):
-    """`default`: every cluster field but `name`, copied into each cluster."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    runtime: Optional[RuntimeConfig] = None
-    cni: Optional[CNIConfig] = None
-    nodes: int = Field(default=1, ge=1)
-    cluster_cidr: str | None = None
-    service_cidr: str | None = None
-    manifests: Optional[List[ManifestConfig]] = None
-    namespaces: Optional[List[NamespaceConfig]] = None
-
-    _validate_cidrs = field_validator("cluster_cidr", "service_cidr")(
-        _validate_ipv4_network
-    )
-
-
 class ClusterConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -329,26 +311,30 @@ class ClusterConfig(BaseModel):
 class RootConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    default: Optional[CommonConfig] = None
+    # Cluster fields (all but `name`) copied into the clusters that do not set
+    # them. Validated on its own by `validate_data`.
+    default: Optional[dict] = None
     clusters: List[ClusterConfig]
     tools: List[ToolConfig] = Field(default_factory=list)
 
     @model_validator(mode="before")
-    def merge_defaults(cls, data):
+    @classmethod
+    def merge_defaults(cls, data: Any) -> Any:
         # Each field of `default` is copied, as is, into the clusters that do
         # not define it (shallow merge: a cluster `cni` replaces the default one)
         if not isinstance(data, dict):
             return data
         default_cfg = data.get("default") or {}
-        if not isinstance(default_cfg, dict):
+        clusters = data.get("clusters")
+        if not isinstance(default_cfg, dict) or not isinstance(clusters, list):
             return data
-        for cluster in data.get("clusters") or []:
-            if not isinstance(cluster, dict):
-                continue
-            for field, value in default_cfg.items():
-                if field not in cluster:
-                    cluster[field] = value
-        return data
+        return {
+            **data,
+            "clusters": [
+                {**default_cfg, **cluster} if isinstance(cluster, dict) else cluster
+                for cluster in clusters
+            ],
+        }
 
     @model_validator(mode="after")
     def validate_uniqueness(self):
@@ -397,10 +383,50 @@ def format_pydantic_error(err) -> list[str]:
     return [f"{loc_path}: {msg}" if loc_path else msg for msg in messages]
 
 
+def _validate_default(default_cfg: dict, context: dict) -> list[dict]:
+    """
+    Validates `default` as a partial cluster: only the errors on the fields
+    it sets are kept (the missing ones may be set by every cluster, and the
+    checks across fields depend on the cluster).
+    """
+    errors = []
+    if "name" in default_cfg:
+        errors.append({"loc": ("default", "name"), "msg": "not allowed in default"})
+    try:
+        ClusterConfig.model_validate(
+            {**default_cfg, "name": "default"}, context=context
+        )
+    except ValidationError as e:
+        errors.extend(
+            {**err, "loc": ("default", *err["loc"])}
+            for err in e.errors()
+            if err["loc"] and err["loc"][0] in default_cfg and err["loc"][0] != "name"
+        )
+    return errors
+
+
+def _inherited_error(err: dict, raw_data: dict, failed_defaults: set) -> bool:
+    """
+    Whether `err` is on a cluster field inherited from `default` that is
+    already reported as a `default` error.
+    """
+    loc = err["loc"]
+    if len(loc) < 3 or loc[0] != "clusters" or loc[2] not in failed_defaults:
+        return False
+    clusters = raw_data.get("clusters")
+    if not isinstance(clusters, list) or not isinstance(loc[1], int):
+        return False
+    cluster = clusters[loc[1]] if loc[1] < len(clusters) else None
+    return isinstance(cluster, dict) and loc[2] not in cluster
+
+
 def validate_data(raw_data: Any, base_dir: str | None = None) -> Optional[RootConfig]:
     """
     Main function to run the validation. `base_dir` is the directory relative
     manifest paths are resolved against (default: the working directory).
+
+    An error in `default` is reported once, as `default.<field>`, and not
+    again for every cluster inheriting the field.
     """
 
     if raw_data is None:
@@ -410,12 +436,25 @@ def validate_data(raw_data: Any, base_dir: str | None = None) -> Optional[RootCo
         log.error("Configuration must be a mapping", found=type(raw_data).__name__)
         return None
 
+    context = {"base_dir": base_dir or os.getcwd()}
+    default_cfg = raw_data.get("default")
+    errors = (
+        _validate_default(default_cfg, context) if isinstance(default_cfg, dict) else []
+    )
+    failed_defaults = {err["loc"][1] for err in errors}
+
+    cfg = None
     try:
-        cfg = RootConfig.model_validate(
-            raw_data, context={"base_dir": base_dir or os.getcwd()}
-        )
+        cfg = RootConfig.model_validate(raw_data, context=context)
     except ValidationError as e:
-        lines = [line for err in e.errors() for line in format_pydantic_error(err)]
+        errors.extend(
+            err
+            for err in e.errors()
+            if not _inherited_error(err, raw_data, failed_defaults)
+        )
+
+    if errors:
+        lines = [line for err in errors for line in format_pydantic_error(err)]
         log.error("Configuration validation failed", errors=len(lines))
         for line in lines:
             log.error(line)

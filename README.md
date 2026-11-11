@@ -24,7 +24,7 @@ uv run python main.py <config.yaml> [--out-dir out] [--log-level INFO] [--log-fo
 |---|---|
 | `config.yaml` | Configuration file (see [examples](#examples)). |
 | `--out-dir` | Directory of the generated files: kubeconfigs, caches, registry proxy data. Default `out`. |
-| `--log-level` | `DEBUG`, `INFO` (default), `WARNING`, `ERROR`. `DEBUG` also logs the external commands. |
+| `--log-level` | `DEBUG`, `INFO` (default), `WARNING`, `ERROR`. `DEBUG` also shows the external commands (kind, liqoctl, ...) and their output; otherwise the output is shown only when a command fails. |
 | `--log-format` | `console` (default) or `json` (one object per line). |
 
 The kubeconfig of each cluster is written to `<out-dir>/kubeconfigs/<name>.yaml`:

@@ -1,6 +1,5 @@
 import yaml
 import os
-import subprocess
 from typing import Literal
 
 from kubernetes import config, client
@@ -21,6 +20,7 @@ from utils.docker_utils import (
 )
 from core.settings import DOCKER_NETWORK_NAME
 from utils.kubeconfig import get_kubeconfig_location
+from utils.commands import run_command
 
 
 class K3dRuntimeSpec(BaseRuntimeSpec):
@@ -40,17 +40,14 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
         return "servicelb" not in self.spec.disable
 
     def check_dependencies(self):
-        subprocess.run(
-            ["k3d", "--version"],
-            check=True,
-        )
+        run_command(["k3d", "--version"], capture=True)
 
     def init_cluster(self) -> None:
         cluster_config = self._gen_config()
         cluster_config_yaml = yaml.dump(cluster_config)
 
         # Create the cluster using k3d CLI
-        subprocess.run(
+        run_command(
             [
                 "k3d",
                 "cluster",
@@ -60,8 +57,7 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
                 "-",
                 "--kubeconfig-update-default=false",
             ],
-            input=cluster_config_yaml.encode(),
-            check=True,
+            input=cluster_config_yaml,
         )
 
         # Save kubeconfig content
@@ -73,18 +69,10 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
             f.write(kubeconfig_content)
 
     def cleanup(self) -> None:
-        subprocess.run(
-            ["k3d", "cluster", "delete", self.name],
-            check=True,
-        )
+        run_command(["k3d", "cluster", "delete", self.name])
 
     def _get_kubeconfig_content(self) -> str:
-        result = subprocess.run(
-            ["k3d", "kubeconfig", "get", self.name],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+        result = run_command(["k3d", "kubeconfig", "get", self.name], capture=True)
         return result.stdout
 
     def load_kernel_modules(self, modules: list[str]) -> None:

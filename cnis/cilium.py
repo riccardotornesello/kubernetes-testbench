@@ -1,6 +1,5 @@
 import ipaddress
 import os
-import subprocess
 import tempfile
 from typing import Literal, Optional
 
@@ -8,6 +7,7 @@ import yaml
 from pydantic import Field
 
 from cnis.base import BaseCNI, BaseCNISpec
+from utils.commands import run_command
 from utils.kubernetes_utils import get_api_server_endpoint
 
 
@@ -53,9 +53,7 @@ class CiliumCNI(BaseCNI[CiliumCNISpec]):
 
     def check_dependencies(self) -> None:
         try:
-            subprocess.run(
-                ["cilium", "version", "--client"], capture_output=True, check=True
-            )
+            run_command(["cilium", "version", "--client"], capture=True)
         except FileNotFoundError as e:
             raise RuntimeError(
                 "Cilium CLI is not installed or not found in PATH."
@@ -70,7 +68,7 @@ class CiliumCNI(BaseCNI[CiliumCNISpec]):
             yaml.dump(self.apply_patches(self._gen_config()), tmp)
             tmp.flush()
 
-            subprocess.run(
+            run_command(
                 [
                     "cilium",
                     "install",
@@ -80,7 +78,6 @@ class CiliumCNI(BaseCNI[CiliumCNISpec]):
                     tmp.name,
                 ],
                 env={**os.environ, "KUBECONFIG": os.path.abspath(self.kubeconfig)},
-                check=True,
             )
 
     def _gen_config(self) -> dict:

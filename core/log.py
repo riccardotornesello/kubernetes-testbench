@@ -150,7 +150,8 @@ class JsonFormatter(logging.Formatter):
 def setup_logging(level: str | int = "INFO", fmt: LogFormat = "console") -> None:
     """
     Configures the root logger: logs go to stderr (stdout is left to the
-    output of the external commands, e.g. liqoctl), in the given format.
+    output of the external commands, shown at DEBUG level, see
+    utils.commands), in the given format.
     """
     handler = logging.StreamHandler(sys.stderr)
     if fmt == "json":

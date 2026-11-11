@@ -18,6 +18,7 @@ CNIs and tools. For the configuration format see
 | `tools/` | One module per tool, base class in `tools/base.py`. |
 | `utils/kubernetes_utils.py` | Kubernetes API helpers (apply, wait, create). |
 | `utils/kubernetes_models.py` | Validation of dicts against the Kubernetes client models. |
+| `utils/commands.py` | `run_command`: execution of the external commands. |
 
 ## Components
 
@@ -207,7 +208,11 @@ The gateway of the provider is exposed through a `LoadBalancer` service if
 `core/input.py` builds the configuration models with pydantic:
 
 - `RootConfig.merge_defaults` copies the `default` fields into the clusters
-  before validation.
+  before validation. `validate_data` also validates `default` on its own,
+  as a partial `ClusterConfig` (`_validate_default`: only the errors on the
+  fields it sets), and drops the cluster errors on inherited fields that
+  already failed in `default`: each error is reported once, where it is
+  written. Cross-field checks (CIDRs, CNI vs CIDR) run per cluster only.
 - `runtime`, `cni` and tools are discriminated unions on `type`, built from
   the discovered spec models (`_typed_config`).
 - Pod and service specs are converted by `utils/kubernetes_models.to_model`
@@ -259,7 +264,12 @@ spec = HelloToolSpec
 
 - `log = core.log.get_logger(__name__)`, then
   `log.info("Installing Liqo", cluster=name)` or `log.bind(cluster=name)`.
-  Logs go to stderr (`console` or `json` format); the output of the external
-  commands goes to stdout. `--log-level DEBUG` also logs the commands run.
+  Logs go to stderr (`console` or `json` format).
+- External commands run through `utils.commands.run_command`, never
+  `subprocess.run` directly. With `--log-level DEBUG` the command is logged
+  and its output streamed to stdout; otherwise the output is captured and
+  its last lines are included in the `CommandError` raised on failure.
+  `capture=True` returns the output (`result.stdout`) instead, e.g. to parse
+  it.
 - Generated files go to `--out-dir` (default `out`); in code use
   `core.paths.output_path(...)`.

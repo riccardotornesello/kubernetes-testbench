@@ -150,7 +150,6 @@ class BaseCNI(ABC, Generic[SpecT]):
         )
 
 
-
 def find_object(objects: list[dict], kind: str, name: str) -> dict | None:
     """Returns the Kubernetes object with the given kind and name, if any."""
     return next(

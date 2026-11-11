@@ -1,6 +1,4 @@
-import shlex
 import shutil
-import subprocess
 from typing import List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -11,6 +9,7 @@ from tools.base import AnyCNI, AnyRuntime, BaseTool, BaseToolSpec, check_known_c
 from cnis.base import find_object
 from cnis.calico import CalicoCNI
 from cnis.cilium import CiliumCNI
+from utils.commands import CommandError, run_command
 from utils.kubeconfig import get_kubeconfig_location
 from utils.kubernetes_utils import ensure_kubernetes_namespace
 from utils.retry import BackoffConfig, retry_with_backoff
@@ -239,11 +238,10 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
             provider=provider,
             version=installation.version or "liqoctl default",
         )
-        cluster_log.debug("Running liqoctl", command=shlex.join(command))
         retry_with_backoff(
-            lambda: subprocess.run(command, check=True),
+            lambda: run_command(command),
             policy=self.spec.install_retry,
-            retry_on=subprocess.CalledProcessError,
+            retry_on=CommandError,
             description="Liqo installation",
             logger=cluster_log,
         )
@@ -268,8 +266,7 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
             provider=provider,
             gw_server_service_type=gw_server_service_type,
         )
-        log.debug("Running liqoctl", command=shlex.join(command))
-        subprocess.run(command, check=True)
+        run_command(command)
 
     def _offload_namespace(self, cluster: str, namespace: str) -> None:
         kubeconfig = get_kubeconfig_location(cluster)
@@ -285,8 +282,7 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
             kubeconfig,
         ]
         log.info("Offloading namespace", cluster=cluster, namespace=namespace)
-        log.debug("Running liqoctl", command=shlex.join(command))
-        subprocess.run(command, check=True)
+        run_command(command)
 
 
 def _calico_skip_liqo_interfaces(resources: list[dict]) -> None:

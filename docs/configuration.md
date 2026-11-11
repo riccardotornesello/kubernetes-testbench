@@ -16,7 +16,8 @@ created. Every error is reported with its path, e.g.
 ## `default`
 
 Shallow merge: a field set in a cluster replaces the whole `default` field
-(e.g. a cluster `cni` replaces the default `cni`, spec included).
+(e.g. a cluster `cni` replaces the default `cni`, spec included). An error in
+`default` is reported once, as `default.<field>`, not for every cluster.
 
 ```yaml
 default:
