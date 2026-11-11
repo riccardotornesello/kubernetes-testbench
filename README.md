@@ -61,8 +61,39 @@ cni:
 
 Generic cluster parameters `cluster_cidr` (default `10.244.0.0/16`) and
 `service_cidr` (default `10.96.0.0/16`) are validated (valid IPv4 CIDRs, no
-overlap, a /24 per node) and passed to every CNI. Every CNI keeps its pods off
-Liqo virtual nodes.
+overlap, a /24 per node) and passed to every CNI.
+
+### CNI customization from tools
+
+CNIs contain no tool-specific configuration: a tool that needs a custom CNI
+configuration registers it on the CNI instance in its `pre_cni_install` hook,
+only for the clusters it cares about:
+
+- `cni.add_node_selector_requirement(req)`: generic, supported by every CNI.
+  Restricts the CNI node agents to the nodes matching a Kubernetes
+  `NodeSelectorRequirement`.
+- `cni.add_patch(fn)`: CNI-specific. `fn` receives the configuration generated
+  by the CNI right before it is installed, and modifies it in place (returning
+  `None`) or returns a new one. Patches run in registration order.
+
+| CNI | Configuration passed to patches |
+|---|---|
+| `flannel` | objects of the `kube-flannel.yml` manifest (`list[dict]`), already customized with the spec |
+| `calico` | Tigera operator resources: `Installation`, `APIServer`, `Goldmane`, `Whisker` (`list[dict]`) |
+| `cilium` | Helm values (`dict`) |
+
+`cnis.base.find_object(objects, kind, name)` helps locating an object in a list.
+
+Example: on the clusters where it is installed, the Liqo tool keeps the CNI
+agents off Liqo virtual nodes (`liqo.io/type DoesNotExist`) and, on Calico,
+excludes the `liqo.*` interfaces from the node address autodetection.
+
+```python
+def pre_cni_install(self, settings, runtime, cni):
+    cni.add_node_selector_requirement({"key": "liqo.io/type", "operator": "DoesNotExist"})
+    if isinstance(cni, CalicoCNI):
+        cni.add_patch(_calico_skip_liqo_interfaces)
+```
 
 ## TODO
 

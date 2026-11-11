@@ -61,7 +61,9 @@ class BaseTool(ABC, Generic[SpecT]):
         cni: Type[BaseCNI],
     ) -> None:
         # Called once PER CLUSTER, right after post_cluster_init and before
-        # the CNI installation.
+        # the CNI installation. Tools that need a custom CNI configuration
+        # register it here, through cni.add_node_selector_requirement (generic)
+        # or cni.add_patch (CNI-specific configuration format).
         pass
 
     def post_cni_install(
@@ -70,8 +72,7 @@ class BaseTool(ABC, Generic[SpecT]):
         runtime: Type[BaseRuntime],
         cni: Type[BaseCNI],
     ) -> None:
-        # Called once PER CLUSTER, after the CNI is installed (or after the
-        # runtime skipped it because the CNI is the runtime default).
+        # Called once PER CLUSTER, after the CNI is installed.
         # Last per-cluster hook: the cluster is considered ready here.
         pass
 

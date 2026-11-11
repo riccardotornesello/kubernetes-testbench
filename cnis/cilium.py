@@ -7,7 +7,7 @@ from typing import Literal, Optional
 import yaml
 from pydantic import Field
 
-from cnis.base import BaseCNI, BaseCNISpec, NOT_ON_LIQO_VIRTUAL_NODES
+from cnis.base import BaseCNI, BaseCNISpec
 from utils.kubernetes_utils import get_api_server_endpoint
 
 
@@ -57,8 +57,12 @@ class CiliumCNI(BaseCNI[CiliumCNISpec]):
             ) from e
 
     def install_cni(self) -> None:
+        """
+        Installs Cilium through the cilium CLI: patches receive the Helm
+        values (dict).
+        """
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml") as tmp:
-            yaml.dump(self._gen_config(), tmp)
+            yaml.dump(self.apply_patches(self._gen_config()), tmp)
             tmp.flush()
 
             subprocess.run(
@@ -76,16 +80,6 @@ class CiliumCNI(BaseCNI[CiliumCNISpec]):
 
     def _gen_config(self) -> dict:
         values = {
-            # Keep Cilium off Liqo virtual nodes
-            "affinity": {
-                "nodeAffinity": {
-                    "requiredDuringSchedulingIgnoredDuringExecution": {
-                        "nodeSelectorTerms": [
-                            {"matchExpressions": [NOT_ON_LIQO_VIRTUAL_NODES]}
-                        ]
-                    }
-                }
-            },
             "routingMode": "tunnel",
             "tunnelProtocol": self.spec.tunnel_protocol,
             "ipam": {
@@ -107,6 +101,11 @@ class CiliumCNI(BaseCNI[CiliumCNISpec]):
 
         if self.spec.mtu is not None:
             values["MTU"] = self.spec.mtu
+
+        affinity = self.node_affinity()
+        if affinity is not None:
+            # Restrict the Cilium agent to the selected nodes
+            values["affinity"] = affinity
 
         return values
 

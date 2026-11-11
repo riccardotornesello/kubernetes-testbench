@@ -6,9 +6,17 @@ from pydantic import BaseModel, Field
 from core.types import Settings
 from tools.base import BaseTool
 from runtimes.base import BaseRuntime
-from cnis.base import BaseCNI
+from cnis.base import BaseCNI, find_object
+from cnis.calico import CalicoCNI
 from utils.kubeconfig import get_kubeconfig_location
 from utils.kubernetes_utils import ensure_kubernetes_namespace
+
+
+# Node selector requirement matching every node except Liqo virtual nodes
+NOT_ON_LIQO_VIRTUAL_NODES = {
+    "key": "liqo.io/type",
+    "operator": "DoesNotExist",
+}
 
 
 class LiqoInstallationConfig(BaseModel):
@@ -32,15 +40,34 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
         # TODO: check if the clusters are supported
         pass
 
+    def _get_installation(self, cluster: str) -> LiqoInstallationConfig | None:
+        return next(
+            (inst for inst in self.spec.installations if inst.cluster == cluster),
+            None,
+        )
+
+    def pre_cni_install(
+        self, settings: Settings, runtime: BaseRuntime, cni: BaseCNI
+    ) -> None:
+        # Runs once PER CLUSTER, before the CNI is installed: adapts the CNI
+        # configuration to Liqo, only if the cluster is listed in
+        # `installations`.
+        if self._get_installation(runtime.name) is None:
+            return
+
+        # The CNI node agents must not be scheduled on Liqo virtual nodes
+        cni.add_node_selector_requirement(NOT_ON_LIQO_VIRTUAL_NODES)
+
+        if isinstance(cni, CalicoCNI):
+            # Calico must not pick the Liqo interfaces as node address
+            cni.add_patch(_calico_skip_liqo_interfaces)
+
     def post_cni_install(
         self, settings: Settings, runtime: BaseRuntime, cni: BaseCNI
     ) -> None:
         # Runs once PER CLUSTER, after the CNI is installed: installs Liqo
         # (liqoctl install) only if the cluster is listed in `installations`.
-        cluster_installation = next(
-            (inst for inst in self.spec.installations if inst.cluster == runtime.name),
-            None,
-        )
+        cluster_installation = self._get_installation(runtime.name)
         if cluster_installation is None:
             return
 
@@ -200,6 +227,13 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
             kubeconfig,
         ]
         subprocess.run(command, check=True)
+
+
+def _calico_skip_liqo_interfaces(resources: list[dict]) -> None:
+    installation = find_object(resources, "Installation", "default")
+    installation["spec"]["calicoNetwork"]["nodeAddressAutodetectionV4"] = {
+        "skipInterface": "liqo.*"
+    }
 
 
 module = LiqoTool

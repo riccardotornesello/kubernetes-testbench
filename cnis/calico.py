@@ -3,7 +3,7 @@ from typing import Literal, Optional
 
 from pydantic import Field
 
-from cnis.base import BaseCNI, BaseCNISpec, NOT_ON_LIQO_VIRTUAL_NODES
+from cnis.base import BaseCNI, BaseCNISpec
 from utils.kubernetes_utils import (
     apply_manifest,
     fetch_manifest,
@@ -47,6 +47,11 @@ class CalicoCNI(BaseCNI[CalicoCNISpec]):
         return self.spec.dataplane == "BPF"
 
     def install_cni(self) -> None:
+        """
+        Installs the Tigera operator, then applies the operator resources
+        (Installation, APIServer, Goldmane, Whisker): patches receive this
+        list of resources (list[dict]), see cnis.base.find_object.
+        """
         base_url = (
             "https://raw.githubusercontent.com/projectcalico/calico/"
             f"v{self.spec.version}/manifests"
@@ -86,12 +91,15 @@ class CalicoCNI(BaseCNI[CalicoCNISpec]):
         apply_manifest(
             self.kubeconfig, fetch_manifest(f"{base_url}/tigera-operator.yaml")
         )
-        apply_manifest(self.kubeconfig, self._gen_config(), timeout=self.spec.timeout)
+        apply_manifest(
+            self.kubeconfig,
+            self.apply_patches(self._gen_config()),
+            timeout=self.spec.timeout,
+        )
 
     def _gen_config(self) -> list[dict]:
         calico_network = {
             "linuxDataplane": self.spec.dataplane,
-            "nodeAddressAutodetectionV4": {"skipInterface": "liqo.*"},
             "ipPools": [
                 {
                     "name": "default-ipv4-ippool",
@@ -109,41 +117,23 @@ class CalicoCNI(BaseCNI[CalicoCNISpec]):
             # Required by k3s: https://docs.tigera.io/calico/latest/getting-started/kubernetes/k3s/multi-node-install
             calico_network["containerIPForwarding"] = "Enabled"
 
-        # Keep the Calico DaemonSets off Liqo virtual nodes
-        not_on_virtual_nodes = {
-            "spec": {
-                "template": {
-                    "spec": {
-                        "affinity": {
-                            "nodeAffinity": {
-                                "requiredDuringSchedulingIgnoredDuringExecution": {
-                                    "nodeSelectorTerms": [
-                                        {
-                                            "matchExpressions": [
-                                                NOT_ON_LIQO_VIRTUAL_NODES
-                                            ]
-                                        }
-                                    ]
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         resources = [
             {
                 "apiVersion": "operator.tigera.io/v1",
                 "kind": "Installation",
                 "metadata": {"name": "default"},
-                "spec": {
-                    "calicoNetwork": calico_network,
-                    "calicoNodeDaemonSet": not_on_virtual_nodes,
-                    "csiNodeDriverDaemonSet": not_on_virtual_nodes,
-                },
+                "spec": {"calicoNetwork": calico_network},
             },
         ]
+
+        affinity = self.node_affinity()
+        if affinity is not None:
+            # Restrict the Calico node agents to the selected nodes
+            node_agent_override = {
+                "spec": {"template": {"spec": {"affinity": affinity}}}
+            }
+            resources[0]["spec"]["calicoNodeDaemonSet"] = node_agent_override
+            resources[0]["spec"]["csiNodeDriverDaemonSet"] = node_agent_override
 
         if self.spec.observability:
             resources += [

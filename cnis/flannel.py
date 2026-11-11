@@ -1,7 +1,7 @@
 import json
 from typing import Literal, Optional
 
-from cnis.base import BaseCNI, BaseCNISpec, NOT_ON_LIQO_VIRTUAL_NODES
+from cnis.base import BaseCNI, BaseCNISpec
 from utils.kubernetes_utils import apply_manifest, fetch_manifest
 
 
@@ -24,11 +24,17 @@ class FlannelCNI(BaseCNI[FlannelCNISpec]):
     WORKLOADS = {"kube-flannel": None}
 
     def install_cni(self) -> None:
+        """
+        Applies the kube-flannel manifest: patches receive its objects
+        (list[dict]), already customized with the spec, see
+        cnis.base.find_object.
+        """
         objects = fetch_manifest(
             "https://github.com/flannel-io/flannel/releases/download/"
             f"v{self.spec.version}/kube-flannel.yml"
         )
-        apply_manifest(self.kubeconfig, [self._customize(obj) for obj in objects])
+        objects = [self._customize(obj) for obj in objects]
+        apply_manifest(self.kubeconfig, self.apply_patches(objects))
 
     def _customize(self, obj: dict) -> dict:
         kind = obj["kind"]
@@ -40,14 +46,16 @@ class FlannelCNI(BaseCNI[FlannelCNISpec]):
         elif kind == "DaemonSet" and name == "kube-flannel-ds":
             pod_spec = obj["spec"]["template"]["spec"]
 
-            # Keep flannel off Liqo virtual nodes
-            terms = pod_spec["affinity"]["nodeAffinity"][
-                "requiredDuringSchedulingIgnoredDuringExecution"
-            ]["nodeSelectorTerms"]
-            for term in terms:
-                term.setdefault("matchExpressions", []).append(
-                    NOT_ON_LIQO_VIRTUAL_NODES
-                )
+            # Restrict flannel to the selected nodes. The manifest already
+            # has a required node affinity (linux nodes): extend its terms.
+            if self.node_selector_requirements:
+                terms = pod_spec["affinity"]["nodeAffinity"][
+                    "requiredDuringSchedulingIgnoredDuringExecution"
+                ]["nodeSelectorTerms"]
+                for term in terms:
+                    term.setdefault("matchExpressions", []).extend(
+                        self.node_selector_requirements
+                    )
 
             if self.spec.iface is not None:
                 for container in pod_spec["containers"]:
