@@ -14,7 +14,10 @@ from pydantic import (
     ValidationError,
 )
 
+from core.log import get_logger
 from core.modules import tool_specs, cni_specs, runtime_specs
+
+log = get_logger(__name__)
 
 
 def _typed_config_model(name: str, spec_cls: type[BaseModel]) -> type[BaseModel]:
@@ -69,24 +72,24 @@ def _validate_ipv4_network(value: str | None) -> str | None:
 class DeploymentConfig(BaseModel):
     name: str
     replicas: int = 1
-    pod_spec: dict = Field(default_factory=dict)  # TODO: validate
+    pod_spec: dict = Field(default_factory=dict)
 
 
 class ServiceConfig(BaseModel):
     name: str
-    spec: dict = Field(default_factory=dict)  # TODO: validate
+    spec: dict = Field(default_factory=dict)
 
 
 class PodConfig(BaseModel):
     name: str
-    spec: dict = Field(default_factory=dict)  # TODO: validate
+    spec: dict = Field(default_factory=dict)
 
 
 class NamespaceConfig(BaseModel):
     name: str
-    deployments: List[DeploymentConfig] = Field(default_factory=list)  # TODO: validate
-    services: List[ServiceConfig] = Field(default_factory=list)  # TODO: validate
-    pods: List[PodConfig] = Field(default_factory=list)  # TODO: validate
+    deployments: List[DeploymentConfig] = Field(default_factory=list)
+    services: List[ServiceConfig] = Field(default_factory=list)
+    pods: List[PodConfig] = Field(default_factory=list)
 
 
 class CommonConfig(BaseModel):
@@ -211,19 +214,22 @@ def validate_data(raw_data: Any) -> Optional[RootConfig]:
     """Main function to run the validation."""
 
     if raw_data is None:
-        print("❌ File is empty.")
+        log.error("Configuration is empty")
+        return None
+    if not isinstance(raw_data, dict):
+        log.error("Configuration must be a mapping", found=type(raw_data).__name__)
         return None
 
     try:
-        # Trigger Validation
         cfg = RootConfig(**raw_data)
-        print("✅ Validation Successful!")
-
     except ValidationError as e:
-        print("❌ Validation Failed. Errors found:")
-        for err in e.errors():
-            print(f" - {format_pydantic_error(err)}")
+        errors = e.errors()
+        log.error("Configuration validation failed", errors=len(errors))
+        for err in errors:
+            log.error(format_pydantic_error(err))
         return None
+
+    log.info("Configuration validated")
 
     return cfg
 
@@ -232,14 +238,14 @@ def validate_config_file(file_path: str) -> Optional[RootConfig]:
     """Loads and validates a YAML configuration file."""
 
     if not os.path.exists(file_path):
-        print(f"❌ File not found: {file_path}")
+        log.error("Configuration file not found", path=file_path)
         return None
 
     with open(file_path, "r") as f:
         try:
             raw_data = yaml.safe_load(f)
         except yaml.YAMLError as e:
-            print(f"❌ YAML Syntax Error: {e}")
+            log.error("Invalid YAML", path=file_path, error=str(e))
             return None
 
     return validate_data(raw_data)

@@ -1,3 +1,20 @@
+## Usage
+
+```bash
+uv run python main.py examples/liqo_minikube.yaml [--out-dir out] [--log-level DEBUG] [--log-format json]
+```
+
+Logs are structured (`message key=value ...`, or one JSON object per line with
+`--log-format json`) and written to stderr; the output of the external
+commands (liqoctl, kind, ...) goes to stdout. `--log-level DEBUG` also logs
+the commands run. In code: `log = core.log.get_logger(__name__)`, then
+`log.info("Installing Liqo", cluster=name)` or `log.bind(cluster=name)`.
+
+Generated files (kubeconfigs, CNI plugins cache, registry proxy data) go to
+`--out-dir` (default `out`); in code, `core.paths.output_path(...)`. The
+`kind` docker network shared by kind, k3d and minikube (docker driver) is
+created before any cluster, if missing.
+
 ## Execution flow
 
 Steps executed by `main.py`. Blue = Kubernetes/cluster configuration, orange = tool hooks, grey = internal steps (config, dependencies).
@@ -48,7 +65,7 @@ runtime:
 
 Every runtime creates `nodes` nodes (the first is the control plane) with the
 given `cluster_cidr`/`service_cidr`, labels the i-th node `tier=worker-<i>`,
-and writes a kubeconfig containing only that cluster to `out/kubeconfigs/<name>.yaml`.
+and writes a kubeconfig containing only that cluster to `<out-dir>/kubeconfigs/<name>.yaml`.
 
 Runtimes contain no tool-specific logic: tools customize the cluster through
 generic options set in `pre_cluster_init`, e.g. `runtime.set_node_proxy(NodeProxy)`
@@ -74,7 +91,7 @@ Same structure as `runtime`/`cni`: `- registry_proxy` is a shorthand for
 
 Caching registry proxy ([rpardini/docker-registry-proxy](https://github.com/rpardini/docker-registry-proxy)),
 shared by every cluster: the nodes of the selected clusters pull their images
-through it. Cache and CA persist across runs in `out/registry-proxy`; the
+through it. Cache and CA persist across runs in `<out-dir>/registry-proxy`; the
 container is reused, and recreated only when its configuration changes.
 
 ```yaml
@@ -99,8 +116,48 @@ cluster has nodes outside that network (minikube `kvm2`).
 
 ### liqo
 
-See `tools/liqo.py`: `installations` (`cluster`, `version`, `offloadings`) and
-`peerings` (pairs of installed clusters).
+See `tools/liqo.py`: `installations` (`cluster`, `version`, `offloadings`),
+`peerings` (pairs of installed clusters) and `install_retry`.
+
+```yaml
+- type: liqo
+  spec:
+    installations:
+      - cluster: rome
+        version: v1.3.0         # release | latest | <repo-url>@<commit-sha>
+        offloadings: [nor]
+      - cluster: milan          # no version: the liqoctl one
+    peerings:
+      - [rome, milan]           # [consumer, provider]
+    install_retry:              # liqoctl install, exponential backoff
+      attempts: 10              # total attempts
+      initial_delay: 5          # seconds before the first retry
+      max_delay: 120            # cap of the delay
+      multiplier: 2
+      jitter: 0.1               # +/- 10% random delay
+```
+
+| Runtime | `liqoctl install` provider | Notes |
+|---|---|---|
+| `kind` | `kind` | |
+| `k3d` | `k3s` | `--api-server-url` (control plane address on the docker network), `--pod-cidr`, `--service-cidr` |
+| `minikube` | `kubeadm` | CIDRs read from the kube-controller-manager; API server URL set to the node address (`--set-string apiServer.address=...`), also when the kubeconfig points to localhost |
+
+`liqoctl` must be in `PATH`; clusters on other runtimes are rejected before any
+cluster is created. `liqoctl peer` exposes the gateway server of the provider
+cluster through a `LoadBalancer` service if its runtime implements them
+(`runtime.provides_load_balancer`: k3d unless `servicelb` is disabled),
+`NodePort` otherwise.
+
+CNI configuration applied on the clusters where Liqo is installed
+([Liqo docs](https://docs.liqo.io/en/v1.3.0/installation/install.html)):
+
+| CNI | Configuration |
+|---|---|
+| all | agents off Liqo virtual nodes (`liqo.io/type DoesNotExist` node affinity) |
+| `calico` | `Installation.spec.calicoNetwork.nodeAddressAutodetectionV4.skipInterface: liqo.*` |
+| `cilium` | `devices: [eth+]` (unless set in the Cilium spec), so that Cilium never uses the `liqo.*` interfaces. With `kube_proxy_replacement`, offloaded pods cannot be exposed through NodePort/LoadBalancer services. |
+| `flannel` | none |
 
 ## CNI
 
@@ -125,7 +182,7 @@ cni:
 |---|---|---|
 | `flannel` | `backend` (`vxlan`, `host-gw`, `wireguard`), `iface`, `enable_nftables` | Needs `br_netfilter` (loaded from the node containers on kind/k3d) and the `bridge`/`host-local`/`loopback`/`portmap` plugins (copied into the nodes on kind/k3d). |
 | `calico` | `dataplane` (`Iptables`, `Nftables`, `BPF`), `encapsulation`, `block_size`, `nat_outgoing`, `mtu`, `observability` | Installed through the Tigera operator. With `BPF`, kube-proxy is disabled and the API server endpoint is given via the `kubernetes-services-endpoint` ConfigMap. |
-| `cilium` | `kube_proxy_replacement`, `tunnel_protocol`, `cluster_pool_mask_size`, `mtu` | Requires the `cilium` CLI. |
+| `cilium` | `kube_proxy_replacement`, `tunnel_protocol`, `cluster_pool_mask_size`, `mtu`, `devices` | Requires the `cilium` CLI. |
 
 Generic cluster parameters `cluster_cidr` (default `10.244.0.0/16`) and
 `service_cidr` (default `10.96.0.0/16`) are validated (valid IPv4 CIDRs, no
@@ -154,7 +211,8 @@ only for the clusters it cares about:
 
 Example: on the clusters where it is installed, the Liqo tool keeps the CNI
 agents off Liqo virtual nodes (`liqo.io/type DoesNotExist`) and, on Calico,
-excludes the `liqo.*` interfaces from the node address autodetection.
+excludes the `liqo.*` interfaces from the node address autodetection (on
+Cilium, from the `devices`).
 
 ```python
 def pre_cni_install(self, settings, runtime, cni):
@@ -165,9 +223,4 @@ def pre_cni_install(self, settings, runtime, cni):
 
 ## TODO
 
-- Move resources creation logic to runtime
-- Check types, in some places Type[...] is wrong
-- Update the output format, make it cleaner and hide the commands output if verbose is disabled
-- Improve the hooks system, add more hooks (after_namespace_creation, after_deployment_creation, etc.)
-- Ask before deleting the clusters, maybe with a --force flag to skip the confirmation
-- The default input should just be spread to the clusters spec, without validation
+See [TODO.md](TODO.md).

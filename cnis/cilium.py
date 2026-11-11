@@ -20,6 +20,11 @@ class CiliumCNISpec(BaseCNISpec):
     cluster_pool_mask_size: int = Field(default=24, ge=16, le=30)
     # MTU of the pod interfaces (default: auto-detected)
     mtu: Optional[int] = Field(default=None, ge=576, le=9000)
+    # Interfaces facing the cluster/external network, used by the eBPF
+    # datapath (kube-proxy replacement, BPF masquerading, host firewall) and
+    # by the MTU auto-detection. '+' is a wildcard (e.g. "eth+").
+    # Default: auto-detected by Cilium.
+    devices: Optional[list[str]] = Field(default=None, min_length=1)
 
     def validate_cluster(
         self,
@@ -101,6 +106,9 @@ class CiliumCNI(BaseCNI[CiliumCNISpec]):
 
         if self.spec.mtu is not None:
             values["MTU"] = self.spec.mtu
+
+        if self.spec.devices is not None:
+            values["devices"] = list(self.spec.devices)
 
         affinity = self.node_affinity()
         if affinity is not None:

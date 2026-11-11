@@ -96,6 +96,14 @@ class BaseRuntime(ABC, Generic[SpecT]):
         """
         return True
 
+    @property
+    def provides_load_balancer(self) -> bool:
+        """
+        Whether the cluster implements Services of type LoadBalancer (i.e. they
+        get an external address reachable from the other clusters).
+        """
+        return False
+
     def set_node_proxy(self, proxy: NodeProxy) -> None:
         """
         Makes the container runtime of the nodes pull images through `proxy`.

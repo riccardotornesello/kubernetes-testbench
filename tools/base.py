@@ -1,5 +1,5 @@
 from abc import ABC
-from typing import Generic, TypeVar, Type, Dict
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict
 
@@ -34,6 +34,10 @@ def check_known_clusters(referenced: list[str], clusters: list[str]) -> None:
 
 SpecT = TypeVar("SpecT", bound=BaseToolSpec)
 
+# Runtime and CNI instances, whatever their spec type
+AnyRuntime = BaseRuntime[Any]
+AnyCNI = BaseCNI[Any]
+
 
 class BaseTool(ABC, Generic[SpecT]):
     """
@@ -58,27 +62,29 @@ class BaseTool(ABC, Generic[SpecT]):
     """
 
     def __init__(self, spec: SpecT) -> None:
-        self.spec = spec
+        self.spec: SpecT = spec
 
     def check_dependencies(self) -> None:
+        # Raise if a dependency (e.g. a CLI) of the tool is missing
         pass
 
     def before_all_operations(
         self,
-        all_settings: Dict[str, Settings],
-        all_runtimes: Dict[str, BaseRuntime],
-        all_cnis: Dict[str, BaseCNI],
+        all_settings: dict[str, Settings],
+        all_runtimes: dict[str, AnyRuntime],
+        all_cnis: dict[str, AnyCNI],
     ) -> None:
         # Called ONCE in total, after the old clusters are deleted and before
         # any cluster is created. Use it to set up shared infrastructure
-        # (e.g. the registry proxy). Same arguments as after_all_operations.
+        # (e.g. the registry proxy). Same arguments as after_all_operations:
+        # the settings, runtime and CNI of every cluster, keyed by cluster name.
         pass
 
     def pre_cluster_init(
         self,
         settings: Settings,
-        runtime: Type[BaseRuntime],
-        cni: Type[BaseCNI],
+        runtime: AnyRuntime,
+        cni: AnyCNI,
     ) -> None:
         # Called once PER CLUSTER, before the runtime creates the cluster.
         # The cluster does not exist yet: no kubeconfig is available.
@@ -87,8 +93,8 @@ class BaseTool(ABC, Generic[SpecT]):
     def post_cluster_init(
         self,
         settings: Settings,
-        runtime: Type[BaseRuntime],
-        cni: Type[BaseCNI],
+        runtime: AnyRuntime,
+        cni: AnyCNI,
     ) -> None:
         # Called once PER CLUSTER, right after the cluster is created and its
         # kubeconfig is written, before the CNI is installed.
@@ -97,8 +103,8 @@ class BaseTool(ABC, Generic[SpecT]):
     def pre_cni_install(
         self,
         settings: Settings,
-        runtime: Type[BaseRuntime],
-        cni: Type[BaseCNI],
+        runtime: AnyRuntime,
+        cni: AnyCNI,
     ) -> None:
         # Called once PER CLUSTER, right after post_cluster_init and before
         # the CNI installation. Tools that need a custom CNI configuration
@@ -109,8 +115,8 @@ class BaseTool(ABC, Generic[SpecT]):
     def post_cni_install(
         self,
         settings: Settings,
-        runtime: Type[BaseRuntime],
-        cni: Type[BaseCNI],
+        runtime: AnyRuntime,
+        cni: AnyCNI,
     ) -> None:
         # Called once PER CLUSTER, after the CNI is installed.
         # Last per-cluster hook: the cluster is considered ready here.
@@ -118,15 +124,12 @@ class BaseTool(ABC, Generic[SpecT]):
 
     def after_all_operations(
         self,
-        all_settings: Dict[str, Settings],
-        all_runtimes: Dict[str, Type[BaseRuntime]],
-        all_cnis: Dict[str, Type[BaseCNI]],
+        all_settings: dict[str, Settings],
+        all_runtimes: dict[str, AnyRuntime],
+        all_cnis: dict[str, AnyCNI],
     ) -> None:
         # Called ONCE in total, after every cluster went through all the
         # per-cluster hooks. Use it for cross-cluster operations (e.g. peering).
         # Runs BEFORE the namespaces/workloads declared in the config are
         # created.
-        # NOTE: `all_settings` actually contains ClusterConfig objects (from
-        # core.input), not core.types.Settings: e.g. `.runtime` is a
-        # RuntimeConfig (`.runtime.type` is the runtime name), not a string.
         pass

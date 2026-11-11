@@ -34,6 +34,11 @@ class K3dRuntimeSpec(BaseRuntimeSpec):
 
 
 class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
+    @property
+    def provides_load_balancer(self) -> bool:
+        # k3s ServiceLB (klipper-lb), unless disabled
+        return "servicelb" not in self.spec.disable
+
     def check_dependencies(self):
         subprocess.run(
             ["k3d", "--version"],

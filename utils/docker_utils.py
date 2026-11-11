@@ -6,6 +6,11 @@ import tarfile
 import docker
 import requests
 
+from core.log import get_logger
+from core.paths import output_path
+
+log = get_logger(__name__)
+
 
 client = docker.from_env()
 
@@ -29,7 +34,7 @@ def ensure_docker_container(
     if container is not None and any(
         container.labels.get(k) != v for k, v in (labels or {}).items()
     ):
-        print(f"Configuration of container {name} changed: recreating it")
+        log.info("Container configuration changed, recreating it", container=name)
         container.remove(force=True)
         container = None
 
@@ -94,15 +99,17 @@ def install_cni_plugins(
     container_names: list[str],
     plugins: list[str],
     version: str,
-    cache_dir: str = "out/cache",
+    cache_dir: str | None = None,
 ) -> None:
     """
     Copies the given reference CNI plugins (containernetworking/plugins) into
     /opt/cni/bin of the given node containers, skipping the plugins already
-    present. The release archive is downloaded once and cached locally.
+    present. The release archive is downloaded once and cached locally
+    (default: <output dir>/cache).
     """
     if not plugins:
         return
+    cache_dir = cache_dir or output_path("cache")
 
     arch = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(
         platform.machine(), platform.machine()
@@ -152,7 +159,7 @@ def install_cni_plugins(
         if all(p in present for p in plugins):
             continue
 
-        print(f"Installing CNI plugins {plugins} in node {name}")
+        log.info("Installing CNI plugins", node=name, plugins=",".join(plugins))
         if not container.put_archive(CNI_PLUGINS_BIN_DIR, payload):
             raise RuntimeError(f"Unable to copy CNI plugins into {name}")
 
@@ -167,7 +174,7 @@ def ensure_kernel_modules(container_name: str, modules: list[str]) -> None:
         if container.exec_run(["test", "-d", f"/sys/module/{module}"]).exit_code == 0:
             continue
 
-        print(f"Loading kernel module {module}")
+        log.info("Loading kernel module", node=container_name, module=module)
         result = container.exec_run(["modprobe", module])
         if result.exit_code != 0:
             raise RuntimeError(

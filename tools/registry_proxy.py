@@ -2,25 +2,35 @@ import hashlib
 import json
 import os
 import time
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import requests
 from pydantic import BaseModel, ConfigDict, Field
 
-from cnis.base import BaseCNI
+from core.log import get_logger
+from core.paths import output_path
 from core.settings import DOCKER_NETWORK_NAME
 from core.types import Settings
-from runtimes.base import BaseRuntime, NodeProxy
-from tools.base import BaseTool, BaseToolSpec, check_known_clusters
+from runtimes.base import NodeProxy
+from tools.base import (
+    AnyCNI,
+    AnyRuntime,
+    BaseTool,
+    BaseToolSpec,
+    check_known_clusters,
+)
 from utils.docker_utils import ensure_docker_container, ensure_docker_network
 from utils.ip import get_main_ip
+
+log = get_logger(__name__)
 
 
 CONTAINER_NAME = "testbench-registry-proxy"
 CONTAINER_PORT = 3128
 CONFIG_LABEL = "testbench.registry-proxy/config-hash"
-CA_DIR = os.path.abspath("./out/registry-proxy/ca")
-CACHE_DIR = os.path.abspath("./out/registry-proxy/cache")
+# Data of the proxy, persisted across runs in the output directory
+CA_SUBDIR = ("registry-proxy", "ca")
+CACHE_SUBDIR = ("registry-proxy", "cache")
 
 # Destinations the nodes reach directly, without the proxy (the runtime adds
 # the cluster pod/service CIDRs)
@@ -81,7 +91,7 @@ class RegistryProxyTool(BaseTool[RegistryProxyToolSpec]):
     Runs a caching registry proxy (rpardini/docker-registry-proxy) shared by
     every cluster, and makes the nodes of the selected clusters pull their
     images through it. The cache (and the proxy CA) persist across runs in
-    out/registry-proxy.
+    <output dir>/registry-proxy.
     """
 
     def __init__(self, spec: RegistryProxyToolSpec) -> None:
@@ -100,9 +110,9 @@ class RegistryProxyTool(BaseTool[RegistryProxyToolSpec]):
 
     def before_all_operations(
         self,
-        all_settings: Dict[str, Settings],
-        all_runtimes: Dict[str, BaseRuntime],
-        all_cnis: Dict[str, BaseCNI],
+        all_settings: dict[str, Settings],
+        all_runtimes: dict[str, AnyRuntime],
+        all_cnis: dict[str, AnyCNI],
     ) -> None:
         runtimes = [r for name, r in all_runtimes.items() if self._selected(name)]
         if not runtimes:
@@ -114,7 +124,7 @@ class RegistryProxyTool(BaseTool[RegistryProxyToolSpec]):
         self.proxy = self._start(publish)
 
     def pre_cluster_init(
-        self, settings: Settings, runtime: BaseRuntime, cni: BaseCNI
+        self, settings: Settings, runtime: AnyRuntime, cni: AnyCNI
     ) -> None:
         if self.proxy is not None and self._selected(runtime.name):
             runtime.set_node_proxy(self.proxy)
@@ -132,9 +142,10 @@ class RegistryProxyTool(BaseTool[RegistryProxyToolSpec]):
         return env
 
     def _start(self, publish: bool) -> NodeProxy:
-        # The network is created by kind with the first cluster: the proxy
-        # starts before any cluster, so it may not exist yet (kind reuses it)
+        # main.py creates the network only if some cluster is attached to it:
+        # the proxy needs it anyway (e.g. every cluster on minikube kvm2)
         ensure_docker_network(DOCKER_NETWORK_NAME)
+        ca_dir, cache_dir = output_path(*CA_SUBDIR), output_path(*CACHE_SUBDIR)
 
         environment = self._environment()
         ports = {f"{CONTAINER_PORT}/tcp": self.spec.host_port} if publish else {}
@@ -145,15 +156,20 @@ class RegistryProxyTool(BaseTool[RegistryProxyToolSpec]):
             ).encode()
         ).hexdigest()[:16]
 
-        print(f"Starting registry proxy {CONTAINER_NAME}")
+        log.info(
+            "Starting registry proxy",
+            container=CONTAINER_NAME,
+            image=self.spec.image,
+            published=publish,
+        )
         container = ensure_docker_container(
             image=self.spec.image,
             name=CONTAINER_NAME,
             environment=environment,
             network=DOCKER_NETWORK_NAME,
             volumes={
-                CA_DIR: {"bind": "/ca", "mode": "rw"},
-                CACHE_DIR: {"bind": "/docker_mirror_cache", "mode": "rw"},
+                ca_dir: {"bind": "/ca", "mode": "rw"},
+                cache_dir: {"bind": "/docker_mirror_cache", "mode": "rw"},
             },
             ports=ports,
             labels={CONFIG_LABEL: config_hash},
@@ -171,7 +187,7 @@ class RegistryProxyTool(BaseTool[RegistryProxyToolSpec]):
             host_address=(
                 f"http://{get_main_ip()}:{self.spec.host_port}" if publish else None
             ),
-            ca_file=os.path.join(CA_DIR, "ca.crt"),
+            ca_file=os.path.join(ca_dir, "ca.crt"),
             no_proxy=[*DEFAULT_NO_PROXY, *self.spec.extra_no_proxy],
         )
         self._wait_ready(proxy)

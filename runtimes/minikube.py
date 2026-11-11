@@ -12,10 +12,13 @@ from runtimes.base import (
     NODE_TIER_LABEL,
     node_tier,
 )
+from core.log import get_logger
 from core.settings import DOCKER_NETWORK_NAME
 from utils.docker_utils import ensure_kernel_modules, install_cni_plugins
 from utils.kubeconfig import get_kubeconfig_location
 from utils.kubernetes_utils import label_nodes
+
+log = get_logger(__name__)
 
 
 # API server port inside the minikube nodes
@@ -55,7 +58,7 @@ class MinikubeClusterSpec(BaseRuntimeSpec):
 class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
     @property
     def _kubeconfig(self) -> str:
-        return os.path.abspath(get_kubeconfig_location(self.name))
+        return get_kubeconfig_location(self.name)
 
     def _run(self, args: list[str], **kwargs) -> subprocess.CompletedProcess:
         # minikube reads/writes the kubeconfig at $KUBECONFIG: point it to the
@@ -118,7 +121,11 @@ class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
                 args.extend([flag, str(value)])
 
         os.makedirs(os.path.dirname(self._kubeconfig), exist_ok=True)
-        print(f"Creating minikube cluster: minikube {' '.join(args)}")
+        log.debug(
+            "Running minikube",
+            cluster=self.name,
+            command=shlex.join(["minikube", *args, "-p", self.name]),
+        )
         self._run(args)
 
         # minikube has no option to label every node differently

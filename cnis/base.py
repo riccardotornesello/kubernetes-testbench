@@ -4,9 +4,12 @@ from typing import Any, Callable, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from core.log import get_logger
 from core.types import Settings
 from utils.kubeconfig import get_kubeconfig_location
 from utils.kubernetes_utils import wait_for_nodes_ready, wait_for_workloads_ready
+
+log = get_logger(__name__)
 
 
 class BaseCNISpec(BaseModel):
@@ -130,7 +133,12 @@ class BaseCNI(ABC, Generic[SpecT]):
         raise NotImplementedError("Subclasses must implement this method.")
 
     def wait_ready(self) -> None:
-        print(f"Waiting for CNI '{self.settings.cni}' to be ready")
+        log.info(
+            "Waiting for CNI to be ready",
+            cluster=self.cluster_name,
+            cni=self.settings.cni,
+            timeout=f"{self.spec.timeout}s",
+        )
         for namespace, names in self.WORKLOADS.items():
             wait_for_workloads_ready(
                 self.kubeconfig, namespace, self.spec.timeout, names=names

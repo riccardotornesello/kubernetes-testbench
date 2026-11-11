@@ -1,16 +1,21 @@
+import shlex
+import shutil
 import subprocess
-from typing import Type, List, Optional, Tuple, Dict
+from typing import List, Optional, Tuple
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from core.log import get_logger
 from core.types import Settings
-from tools.base import BaseTool, BaseToolSpec, check_known_clusters
-from runtimes.base import BaseRuntime
-from cnis.base import BaseCNI, find_object
+from tools.base import AnyCNI, AnyRuntime, BaseTool, BaseToolSpec, check_known_clusters
+from cnis.base import find_object
 from cnis.calico import CalicoCNI
+from cnis.cilium import CiliumCNI
 from utils.kubeconfig import get_kubeconfig_location
 from utils.kubernetes_utils import ensure_kubernetes_namespace
+from utils.retry import BackoffConfig, retry_with_backoff
 
+log = get_logger(__name__)
 
 # Node selector requirement matching every node except Liqo virtual nodes
 NOT_ON_LIQO_VIRTUAL_NODES = {
@@ -18,18 +23,54 @@ NOT_ON_LIQO_VIRTUAL_NODES = {
     "operator": "DoesNotExist",
 }
 
+# Interfaces Cilium may use when Liqo is installed, if the Cilium spec does not
+# list them: the node interfaces of every runtime (kind/k3d/minikube docker:
+# eth0, minikube kvm2: eth0/eth1), excluding the Liqo ones (liqo.*).
+LIQO_CILIUM_DEVICES = ["eth+"]
+
+# `liqoctl install` provider for each supported runtime
+LIQOCTL_PROVIDERS = {
+    "k3d": "k3s",
+    "kind": "kind",
+    # minikube bootstraps the cluster with kubeadm
+    "minikube": "kubeadm",
+}
+
 
 class LiqoInstallationConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     cluster: str
+    # Liqo version: a release (e.g. "v1.3.0", default: the liqoctl version),
+    # "latest", or "<repo-url>@<commit-sha>" for a development version
     version: Optional[str] = None
     offloadings: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_version(self):
+        self.chart_version()
+        return self
+
+    def chart_version(self) -> tuple[str | None, str | None]:
+        """(--repo-url, --version) liqoctl arguments, None if not set."""
+        if self.version is None or self.version == "latest":
+            return None, None
+        if "@" in self.version:
+            repo_url, _, commit = self.version.rpartition("@")
+            if not repo_url or not commit:
+                raise ValueError(
+                    f"invalid Liqo version '{self.version}': "
+                    "expected '<repo-url>@<commit-sha>'"
+                )
+            return repo_url, commit
+        return None, self.version
 
 
 class LiqoToolSpec(BaseToolSpec):
     installations: List[LiqoInstallationConfig] = Field(default_factory=list)
     peerings: List[Tuple[str, str]] = Field(default_factory=list)
+    # Retry policy of `liqoctl install` (exponential backoff between attempts)
+    install_retry: BackoffConfig = Field(default_factory=BackoffConfig)
 
     def validate_clusters(self, clusters: list[str]) -> None:
         installed = [inst.cluster for inst in self.installations]
@@ -44,14 +85,28 @@ class LiqoToolSpec(BaseToolSpec):
 
 
 class LiqoTool(BaseTool[LiqoToolSpec]):
-    # TODO: check dependencies
+    def check_dependencies(self) -> None:
+        if self.spec.installations and shutil.which("liqoctl") is None:
+            raise RuntimeError("liqoctl is not installed or not found in PATH")
 
-    def pre_cluster_init(
-        self, settings: Settings, runtime: BaseRuntime, cni: BaseCNI
+    def before_all_operations(
+        self,
+        all_settings: dict[str, Settings],
+        all_runtimes: dict[str, AnyRuntime],
+        all_cnis: dict[str, AnyCNI],
     ) -> None:
-        # Runs once PER CLUSTER, before cluster creation. Currently a no-op.
-        # TODO: check if the clusters are supported
-        pass
+        # Runs ONCE in total, before any cluster is created: fails early if
+        # Liqo cannot be installed on some cluster
+        unsupported = {
+            inst.cluster: all_settings[inst.cluster].runtime
+            for inst in self.spec.installations
+            if all_settings[inst.cluster].runtime not in LIQOCTL_PROVIDERS
+        }
+        if unsupported:
+            raise ValueError(
+                f"Liqo installation not supported on clusters {unsupported} "
+                f"(supported runtimes: {sorted(LIQOCTL_PROVIDERS)})"
+            )
 
     def _get_installation(self, cluster: str) -> LiqoInstallationConfig | None:
         return next(
@@ -60,11 +115,11 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
         )
 
     def pre_cni_install(
-        self, settings: Settings, runtime: BaseRuntime, cni: BaseCNI
+        self, settings: Settings, runtime: AnyRuntime, cni: AnyCNI
     ) -> None:
         # Runs once PER CLUSTER, before the CNI is installed: adapts the CNI
-        # configuration to Liqo, only if the cluster is listed in
-        # `installations`.
+        # configuration to Liqo (https://docs.liqo.io/en/v1.3.0/installation/install.html),
+        # only if the cluster is listed in `installations`.
         if self._get_installation(runtime.name) is None:
             return
 
@@ -75,162 +130,152 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
             # Calico must not pick the Liqo interfaces as node address
             cni.add_patch(_calico_skip_liqo_interfaces)
 
+        if isinstance(cni, CiliumCNI):
+            # Cilium must not attach its eBPF programs to, or read the MTU
+            # from, the Liqo interfaces
+            cni.add_patch(_cilium_exclude_liqo_interfaces)
+            if cni.spec.kube_proxy_replacement:
+                log.warning(
+                    "Cilium replaces kube-proxy: offloaded pods cannot be "
+                    "exposed through NodePort/LoadBalancer services",
+                    cluster=runtime.name,
+                )
+
     def post_cni_install(
-        self, settings: Settings, runtime: BaseRuntime, cni: BaseCNI
+        self, settings: Settings, runtime: AnyRuntime, cni: AnyCNI
     ) -> None:
         # Runs once PER CLUSTER, after the CNI is installed: installs Liqo
         # (liqoctl install) only if the cluster is listed in `installations`.
-        cluster_installation = self._get_installation(runtime.name)
-        if cluster_installation is None:
+        installation = self._get_installation(runtime.name)
+        if installation is None:
             return
 
-        match settings.runtime:
-            case "k3d":
-                return self._install_in_cluster(
-                    runtime="k3s",
-                    cluster_id=settings.name,
-                    kubeconfig=get_kubeconfig_location(runtime.name),
-                    version=cluster_installation.version,
-                    api_server_url=runtime.get_api_server_address(),
-                    pod_cidr=settings.cluster_cidr,
-                    service_cidr=settings.service_cidr,
-                )
-            case "kind":
-                return self._install_in_cluster(
-                    runtime="kind",
-                    cluster_id=settings.name,
-                    kubeconfig=get_kubeconfig_location(runtime.name),
-                    version=cluster_installation.version,
-                )
-            case "minikube":
-                return self._install_in_cluster(
-                    runtime="kind",
-                    cluster_id=settings.name,
-                    kubeconfig=get_kubeconfig_location(runtime.name),
-                    version=cluster_installation.version,
-                )
+        # liqoctl provider and its provider-specific arguments (the supported
+        # runtimes are checked in before_all_operations)
+        provider = LIQOCTL_PROVIDERS[settings.runtime]
+        match provider:
+            case "k3s":
+                provider_args = [
+                    "--api-server-url",
+                    runtime.get_api_server_address(),
+                    "--pod-cidr",
+                    settings.cluster_cidr,
+                    "--service-cidr",
+                    settings.service_cidr,
+                ]
+            case "kubeadm":
+                # liqoctl reads the pod/service CIDRs from the
+                # kube-controller-manager, and the API server URL from the
+                # kubeconfig, leaving it unset if it is a localhost address
+                # (e.g. port forwarded by the docker driver): set it to the
+                # node address, reachable from the other clusters. --set
+                # values are applied last, overriding the detected one.
+                provider_args = [
+                    "--set-string",
+                    f"apiServer.address={runtime.get_api_server_address()}",
+                ]
             case _:
-                raise ValueError(
-                    f"Liqo post CNI install is not supported for runtime: {settings.runtime}"
-                )
+                # kind: CIDRs from the kube-controller-manager, API server
+                # address from the control plane node
+                provider_args = []
+
+        self._install_in_cluster(
+            installation=installation,
+            kubeconfig=get_kubeconfig_location(runtime.name),
+            provider=provider,
+            provider_args=provider_args,
+        )
 
     def after_all_operations(
         self,
-        all_settings: Dict[str, Settings],
-        all_runtimes: Dict[str, Type[BaseRuntime]],
-        all_cnis: Dict[str, Type[BaseCNI]],
+        all_settings: dict[str, Settings],
+        all_runtimes: dict[str, AnyRuntime],
+        all_cnis: dict[str, AnyCNI],
     ) -> None:
         # Runs ONCE in total, after Liqo is installed on every cluster:
         # 1. peers each pair in `peerings` (liqoctl peer)
         # 2. offloads the namespaces listed in each installation's `offloadings`
         #    (liqoctl offload namespace), creating them if missing.
         # Workloads declared in the config are created only after this hook.
-        for peering in self.spec.peerings:
-            cluster_a = all_settings[peering[0]]
-            cluster_b = all_settings[peering[1]]
-
-            # TODO: improve support for different runtimes: replace the check on "k3d" with a property on the runtime
+        for consumer, provider in self.spec.peerings:
+            # The gateway server runs on the provider cluster: exposed through
+            # a LoadBalancer service where the runtime implements them
             self._peer_clusters(
-                kubeconfig=get_kubeconfig_location(cluster_a.name),
-                remote_kubeconfig=get_kubeconfig_location(cluster_b.name),
+                consumer=consumer,
+                provider=provider,
                 gw_server_service_type="LoadBalancer"
-                if cluster_b.runtime.type == "k3d"
+                if all_runtimes[provider].provides_load_balancer
                 else "NodePort",
             )
 
         for installation in self.spec.installations:
             for namespace in installation.offloadings:
-                self._offload_namespace(
-                    kubeconfig=get_kubeconfig_location(installation.cluster),
-                    namespace=namespace,
-                )
+                self._offload_namespace(installation.cluster, namespace)
 
     def _install_in_cluster(
         self,
-        cluster_id: str,
+        installation: LiqoInstallationConfig,
         kubeconfig: str,
-        version: str,
-        runtime: str | None = None,
-        api_server_url: str | None = None,
-        pod_cidr: str | None = None,
-        service_cidr: str | None = None,
+        provider: str,
+        provider_args: list[str],
     ) -> None:
-        print(f"Installing Liqo version {version}")
+        repo_url, version = installation.chart_version()
+        cluster_log = log.bind(cluster=installation.cluster)
 
-        repo_url = None
-        version_hash = None
-        if version is not None and version != "latest":
-            (repo_url, version_hash) = version.split("@")
-
-        command = [
-            "liqoctl",
-            "install",
-        ]
-
-        if runtime:
-            command.append(runtime)
-
-        command.append("-v")
-
-        # Build installation command by adding parameters
+        command = ["liqoctl", "install", provider, "--verbose"]
         parameters = {
-            "--cluster-id": cluster_id,
-            "--pod-cidr": pod_cidr,
-            "--service-cidr": service_cidr,
+            "--cluster-id": installation.cluster,
             "--kubeconfig": kubeconfig,
-            "--api-server-url": api_server_url,
             "--repo-url": repo_url,
-            "--version": version_hash,
+            "--version": version,
         }
-
         for param, value in parameters.items():
             if value is not None:
                 command.extend([param, value])
+        command.extend(provider_args)
 
-        max_retries = 10
-        for attempt in range(max_retries):
-            try:
-                print(f"Attempt {attempt + 1} of {max_retries}")
-                print(f"Running command: {' '.join(command)}")
-                subprocess.run(command, check=True)
-                break
-            except subprocess.CalledProcessError:
-                if attempt == max_retries - 1:
-                    raise
-                print(f"Attempt {attempt + 1} failed, retrying...")
+        cluster_log.info(
+            "Installing Liqo",
+            provider=provider,
+            version=installation.version or "liqoctl default",
+        )
+        cluster_log.debug("Running liqoctl", command=shlex.join(command))
+        retry_with_backoff(
+            lambda: subprocess.run(command, check=True),
+            policy=self.spec.install_retry,
+            retry_on=subprocess.CalledProcessError,
+            description="Liqo installation",
+            logger=cluster_log,
+        )
+        cluster_log.info("Liqo installed")
 
     def _peer_clusters(
-        self,
-        kubeconfig: str,
-        remote_kubeconfig: str,
-        gw_server_service_type: str,
+        self, consumer: str, provider: str, gw_server_service_type: str
     ) -> None:
-        print("Peering clusters")
-
         command = [
             "liqoctl",
             "peer",
+            "--kubeconfig",
+            get_kubeconfig_location(consumer),
+            "--remote-kubeconfig",
+            get_kubeconfig_location(provider),
+            "--gw-server-service-type",
+            gw_server_service_type,
         ]
-
-        # Build installation command by adding parameters
-        parameters = {
-            "--kubeconfig": kubeconfig,
-            "--remote-kubeconfig": remote_kubeconfig,
-            "--gw-server-service-type": gw_server_service_type,
-        }
-
-        for param, value in parameters.items():
-            if value is not None:
-                command.extend([param, value])
-
-        # Execute peering command
+        log.info(
+            "Peering clusters",
+            consumer=consumer,
+            provider=provider,
+            gw_server_service_type=gw_server_service_type,
+        )
+        log.debug("Running liqoctl", command=shlex.join(command))
         subprocess.run(command, check=True)
 
-    def _offload_namespace(self, kubeconfig: str, namespace: str) -> None:
+    def _offload_namespace(self, cluster: str, namespace: str) -> None:
+        kubeconfig = get_kubeconfig_location(cluster)
         # Create the namespace if it does not exist
         ensure_kubernetes_namespace(kubeconfig, namespace)
 
-        # Run liqoctl offload namespace command
         command = [
             "liqoctl",
             "offload",
@@ -239,6 +284,8 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
             "--kubeconfig",
             kubeconfig,
         ]
+        log.info("Offloading namespace", cluster=cluster, namespace=namespace)
+        log.debug("Running liqoctl", command=shlex.join(command))
         subprocess.run(command, check=True)
 
 
@@ -247,6 +294,12 @@ def _calico_skip_liqo_interfaces(resources: list[dict]) -> None:
     installation["spec"]["calicoNetwork"]["nodeAddressAutodetectionV4"] = {
         "skipInterface": "liqo.*"
     }
+
+
+def _cilium_exclude_liqo_interfaces(values: dict) -> None:
+    # Explicit device list (the user one, if set in the Cilium spec), so that
+    # Cilium does not auto-detect the Liqo interfaces
+    values.setdefault("devices", list(LIQO_CILIUM_DEVICES))
 
 
 module = LiqoTool
