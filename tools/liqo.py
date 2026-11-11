@@ -25,13 +25,18 @@ class LiqoToolSpec(BaseModel):
 class LiqoTool(BaseTool[LiqoToolSpec]):
     # TODO: check dependencies
 
-    def pre_cluster_init(self) -> None:
+    def pre_cluster_init(
+        self, settings: Settings, runtime: BaseRuntime, cni: BaseCNI
+    ) -> None:
+        # Runs once PER CLUSTER, before cluster creation. Currently a no-op.
         # TODO: check if the clusters are supported
         pass
 
     def post_cni_install(
         self, settings: Settings, runtime: BaseRuntime, cni: BaseCNI
     ) -> None:
+        # Runs once PER CLUSTER, after the CNI is installed: installs Liqo
+        # (liqoctl install) only if the cluster is listed in `installations`.
         cluster_installation = next(
             (inst for inst in self.spec.installations if inst.cluster == runtime.name),
             None,
@@ -75,6 +80,11 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
         all_runtimes: Dict[str, Type[BaseRuntime]],
         all_cnis: Dict[str, Type[BaseCNI]],
     ) -> None:
+        # Runs ONCE in total, after Liqo is installed on every cluster:
+        # 1. peers each pair in `peerings` (liqoctl peer)
+        # 2. offloads the namespaces listed in each installation's `offloadings`
+        #    (liqoctl offload namespace), creating them if missing.
+        # Workloads declared in the config are created only after this hook.
         for peering in self.spec.peerings:
             cluster_a = all_settings[peering[0]]
             cluster_b = all_settings[peering[1]]

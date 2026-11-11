@@ -76,26 +76,39 @@ def main(config_file: str) -> None:
 
     # TODO: create network
 
+    # Per-cluster phase: clusters are created sequentially, and every tool hook
+    # inside this loop runs once PER CLUSTER (for every tool).
     for cluster in clusters.values():
         if cluster["runtime"].settings.cache:
             cluster["runtime"].set_proxy(proxy_address)
 
+        hook_args = {
+            "settings": cluster["runtime"].settings,
+            "runtime": cluster["runtime"],
+            "cni": cluster["cni"],
+        }
+
+        # Hook: once per cluster, before cluster creation
         for tool in tools:
-            tool.pre_cluster_init()
+            tool.pre_cluster_init(**hook_args)
 
         cluster["runtime"].init_cluster()
+
+        # Hook: once per cluster, after cluster creation, before CNI
         for tool in tools:
-            tool.post_cluster_init()
+            tool.post_cluster_init(**hook_args)
+
+        # Hook: once per cluster, before CNI installation
+        for tool in tools:
+            tool.pre_cni_install(**hook_args)
 
         cluster["runtime"].install_cni(cluster["cni"])
 
+        # Hook: once per cluster, after CNI installation
         for tool in tools:
-            tool.post_cni_install(
-                settings=cluster["runtime"].settings,
-                runtime=cluster["runtime"],
-                cni=cluster["cni"],
-            )
+            tool.post_cni_install(**hook_args)
 
+    # Hook: ONCE in total, after all clusters are ready (cross-cluster ops)
     for tool in tools:
         tool.after_all_operations(
             all_settings=all_settings,
@@ -103,6 +116,7 @@ def main(config_file: str) -> None:
             all_cnis=all_cnis,
         )
 
+    # Workloads are created last, after every tool hook (no tool hook runs here)
     for cluster_cfg in cfg.clusters:
         kubeconfig_path = get_kubeconfig_location(cluster_cfg.name)
         for namespace_cfg in cluster_cfg.namespaces:
