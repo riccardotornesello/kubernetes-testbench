@@ -300,3 +300,40 @@ uv run python -m unittest tests.test_input -v
 `tests/helpers.py` provides `make_settings`, `cluster` and
 `ValidationTestCase` (validates raw configurations in a temporary directory
 and captures the reported errors).
+
+### End-to-end tests
+
+`tests/e2e/` runs the real testbench (`main.py`) and checks the created
+clusters through the Kubernetes API. They are skipped unless
+`TESTBENCH_E2E=1`: they need Docker and the runtime CLIs, create real
+clusters and take minutes.
+
+```bash
+TESTBENCH_E2E=1 uv run python -m unittest tests.e2e -v                 # every installed runtime
+TESTBENCH_E2E=1 TESTBENCH_E2E_RUNTIMES=kind uv run python -m unittest tests.e2e -v
+TESTBENCH_E2E=1 uv run python -m unittest tests.e2e.test_clusters.KindE2E.test_flannel -v
+```
+
+| Variable | Description |
+|---|---|
+| `TESTBENCH_E2E=1` | Enables the tests. |
+| `TESTBENCH_E2E_RUNTIMES` | Runtimes to test, comma separated (default: those whose CLI is installed). minikube uses the docker driver. |
+| `TESTBENCH_E2E_KEEP=1` | Keeps clusters and files after the tests, for debugging. |
+
+Every scenario runs on each selected runtime (`KindE2E`, `K3dE2E`,
+`MinikubeE2E`):
+
+| Test | Checks |
+|---|---|
+| `test_flannel`, `test_calico`, `test_cilium` | 2-node cluster with the CNI: nodes Ready with their `tier` labels, every pod Ready. `test_cilium` needs the `cilium` CLI. |
+| `test_workloads` | Deployment, service, pod pinned to `worker-1`, manifest with a relative path; a Job reaches the service through the cluster DNS. |
+| `test_registry_proxy` | Proxy container running, pod image pulled through it (cache not empty). |
+| `test_liqo` | Two peered clusters: virtual node on the consumer, offloaded pod running on it. Needs `liqoctl`. |
+
+Every run must exit successfully and log no error (`--log-format json`).
+Clusters are named `tbe2e-<runtime>-<scenario>`, so they never clash with
+other clusters, and are deleted at the end of each test. On a failed run the
+logs (`stderr` in the failure message, command output in `stdout.log`) are
+kept in the reported directory. The registry proxy container has a fixed
+name (`testbench-registry-proxy`): `test_registry_proxy` replaces an
+existing one and removes it at the end; the next testbench run recreates it.

@@ -151,9 +151,20 @@ class RegistryProxyTool(BaseTool[RegistryProxyToolSpec]):
 
         environment = self._environment()
         ports = {f"{CONTAINER_PORT}/tcp": self.spec.host_port} if publish else {}
+        volumes = {
+            ca_dir: {"bind": "/ca", "mode": "rw"},
+            cache_dir: {"bind": "/docker_mirror_cache", "mode": "rw"},
+        }
+        # The volumes are part of the configuration: a container of another
+        # output directory is recreated (it would serve another CA)
         config_hash = hashlib.sha256(
             json.dumps(
-                {"image": self.spec.image, "env": environment, "ports": ports},
+                {
+                    "image": self.spec.image,
+                    "env": environment,
+                    "ports": ports,
+                    "volumes": volumes,
+                },
                 sort_keys=True,
             ).encode()
         ).hexdigest()[:16]
@@ -169,10 +180,7 @@ class RegistryProxyTool(BaseTool[RegistryProxyToolSpec]):
             name=CONTAINER_NAME,
             environment=environment,
             network=DOCKER_NETWORK_NAME,
-            volumes={
-                ca_dir: {"bind": "/ca", "mode": "rw"},
-                cache_dir: {"bind": "/docker_mirror_cache", "mode": "rw"},
-            },
+            volumes=volumes,
             ports=ports,
             labels={CONFIG_LABEL: config_hash},
         )
