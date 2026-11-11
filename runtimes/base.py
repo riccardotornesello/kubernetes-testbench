@@ -1,27 +1,79 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import TypeVar, Generic
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from core.types import Settings
 from cnis.base import BaseCNI
 
 
-SpecT = TypeVar("SpecT", bound=BaseModel)
+class BaseRuntimeSpec(BaseModel):
+    """
+    Parameters of a runtime. Each runtime subclasses this model, adding its
+    own parameters. Unknown parameters are rejected.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+SpecT = TypeVar("SpecT", bound=BaseRuntimeSpec)
 
 # Version of the reference CNI plugins (containernetworking/plugins) copied
 # into the nodes when the CNI requires them and the node image lacks them.
 CNI_PLUGINS_VERSION = "1.9.1"
 
+# Label set on every node: the i-th node (0 = control plane) gets
+# `tier=worker-<i>`, so that workloads can target a specific node.
+NODE_TIER_LABEL = "tier"
+
+
+def node_tier(index: int) -> str:
+    return f"worker-{index}"
+
+
+# Path of the proxy CA inside the nodes. Go programs (containerd, cri-o,
+# docker) load every file of /etc/ssl/certs as a trusted CA.
+NODE_PROXY_CA_PATH = "/etc/ssl/certs/node-proxy-ca.pem"
+
+
+@dataclass
+class NodeProxy:
+    """
+    HTTP(S) proxy the container runtime of the nodes pulls images through
+    (e.g. a caching registry proxy), trusting its CA.
+    """
+
+    # URL of the proxy on the testbench docker network (DOCKER_NETWORK_NAME)
+    address: str
+    # URL of the proxy published on the host, for the nodes outside the docker
+    # network (e.g. VMs). None if not published.
+    host_address: str | None
+    # Host path of the proxy CA certificate (PEM)
+    ca_file: str
+    # Path, relative to the proxy URL, from which the nodes download the CA
+    ca_url_path: str = "/ca.crt"
+    # Destinations reached without the proxy. The runtime adds the cluster
+    # pod and service CIDRs.
+    no_proxy: list[str] = field(default_factory=list)
+
 
 class BaseRuntime(ABC, Generic[SpecT]):
     """
-    A runtime always creates the cluster WITHOUT its built-in CNI (and without
+    A runtime creates a cluster of `settings.nodes` nodes (one control plane,
+    the others workers), with the given pod/service CIDRs, and every node
+    labeled `tier=worker-<i>`.
+
+    The cluster is always created WITHOUT its built-in CNI (and without
     kube-proxy if the CNI replaces it): the CNI is always installed by the
     testbench, so that every CNI receives the same parameters on every runtime.
-    """
 
-    proxy_address: str | None = None
+    The kubeconfig of the cluster (and only of this cluster) must be written to
+    utils.kubeconfig.get_kubeconfig_location(name) by init_cluster.
+
+    Runtimes contain no tool-specific logic: tools customize the cluster
+    through generic options set before init_cluster (e.g. set_node_proxy).
+    """
 
     def __init__(
         self,
@@ -34,9 +86,71 @@ class BaseRuntime(ABC, Generic[SpecT]):
         self.settings = settings
         self.spec = spec
         self.cni = cni
+        self.node_proxy: NodeProxy | None = None
 
-    def set_proxy(self, proxy_address: str) -> None:
-        self.proxy_address = proxy_address
+    @property
+    def on_docker_network(self) -> bool:
+        """
+        Whether the nodes are attached to the testbench docker network
+        (DOCKER_NETWORK_NAME), i.e. reach the containers on it directly.
+        """
+        return True
+
+    def set_node_proxy(self, proxy: NodeProxy) -> None:
+        """
+        Makes the container runtime of the nodes pull images through `proxy`.
+        Must be called before init_cluster (e.g. from the tool
+        `pre_cluster_init` hook), which applies it.
+        """
+        self.node_proxy = proxy
+
+    def node_proxy_address(self) -> str:
+        """URL of the node proxy as reachable from the nodes of this cluster."""
+        assert self.node_proxy is not None
+        if self.on_docker_network:
+            return self.node_proxy.address
+        if self.node_proxy.host_address is None:
+            raise RuntimeError(
+                f"Cluster {self.name}: the nodes are outside the docker network "
+                "and the proxy is not published on the host"
+            )
+        return self.node_proxy.host_address
+
+    def node_no_proxy(self) -> str:
+        """NO_PROXY value for the nodes, including the cluster CIDRs."""
+        assert self.node_proxy is not None
+        return ",".join(
+            [
+                *self.node_proxy.no_proxy,
+                self.settings.cluster_cidr,
+                self.settings.service_cidr,
+            ]
+        )
+
+    def node_proxy_setup_script(self, service: str) -> str:
+        """
+        Shell script (run as root on a systemd node) that makes the given
+        container runtime service use the node proxy: it downloads and trusts
+        the proxy CA, sets the proxy environment of the service and restarts it.
+        """
+        assert self.node_proxy is not None
+        address = self.node_proxy_address()
+        dropin_dir = f"/etc/systemd/system/{service}.service.d"
+        lines = [
+            "set -e",
+            f"curl -fsSL {address}{self.node_proxy.ca_url_path}"
+            f" -o {NODE_PROXY_CA_PATH}",
+            f"mkdir -p {dropin_dir}",
+            f"cat > {dropin_dir}/http-proxy.conf <<'END'",
+            "[Service]",
+            f'Environment="HTTP_PROXY={address}"',
+            f'Environment="HTTPS_PROXY={address}"',
+            f'Environment="NO_PROXY={self.node_no_proxy()}"',
+            "END",
+            "systemctl daemon-reload",
+            f"systemctl restart {service}",
+        ]
+        return "\n".join(lines) + "\n"
 
     def check_dependencies(self) -> None:
         pass
@@ -68,8 +182,13 @@ class BaseRuntime(ABC, Generic[SpecT]):
 
     @abstractmethod
     def cleanup(self) -> None:
+        """Deletes the cluster. Must not fail if the cluster does not exist."""
         raise NotImplementedError("Subclasses must implement this method.")
 
     @abstractmethod
     def get_api_server_address(self) -> str:
+        """
+        URL of the API server reachable from the nodes of the OTHER clusters
+        (i.e. the node address, not the port forwarded on the host).
+        """
         raise NotImplementedError("Subclasses must implement this method.")

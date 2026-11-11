@@ -18,12 +18,27 @@ def ensure_docker_container(
     network: str | None = None,
     volumes: dict | None = None,
     ports: dict | None = None,
+    labels: dict | None = None,
 ) -> docker.models.containers.Container:
+    """
+    Returns the container `name`, starting it if stopped, or creates it.
+    `labels` identify the configuration: an existing container whose labels
+    differ is recreated.
+    """
     container = get_container(name)
+    if container is not None and any(
+        container.labels.get(k) != v for k, v in (labels or {}).items()
+    ):
+        print(f"Configuration of container {name} changed: recreating it")
+        container.remove(force=True)
+        container = None
+
     if container is not None:
         # If the container is not running, start it
         if container.status != "running":
             container.start()
+            # Refresh the attributes (e.g. the network addresses)
+            container.reload()
 
         return container
 
@@ -35,7 +50,10 @@ def ensure_docker_container(
         network=network,
         volumes=volumes,
         ports=ports,
+        labels=labels,
     )
+    # The returned attributes predate the start (e.g. no network addresses)
+    container.reload()
     return container
 
 

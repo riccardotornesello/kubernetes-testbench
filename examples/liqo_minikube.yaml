@@ -1,6 +1,13 @@
 default:
   runtime:
     type: "minikube"
+    # Every spec field is optional; see runtimes/<type>.py for the available ones.
+    spec:
+      kubernetes_version: "1.30.0"
+      driver: "kvm2"
+      container_runtime: "containerd"
+      cpus: 2
+      memory: "4g"
   # CNI: `cni: flannel` is a shorthand for `cni: {type: flannel}`.
   # Every spec field is optional; see cnis/<type>.py for the available ones.
   cni:
@@ -16,7 +23,6 @@ default:
 
 clusters:
   - name: "rome"
-    cache: true
     namespaces:
       - name: "nlr"
         pods:
@@ -121,7 +127,6 @@ clusters:
                   port: 80
                   targetPort: 80
   - name: "milan"
-    cache: true
     namespaces:
       - name: "nlm"
         pods:
@@ -160,6 +165,9 @@ clusters:
                   targetPort: 80
 
 tools:
+  # Caching registry proxy: the nodes of every cluster (or of `clusters`)
+  # pull their images through it. See tools/registry_proxy.py.
+  - type: "registry_proxy"
   - type: "liqo"
     spec:
       installations:

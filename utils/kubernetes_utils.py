@@ -249,3 +249,11 @@ def _wait_until(condition, timeout: int, describe, interval: int = 5) -> None:
         if time.monotonic() > deadline:
             raise TimeoutError(f"Timeout after {timeout}s: {describe()}")
         time.sleep(interval)
+
+
+def label_nodes(kubeconfig_path: str, labels: dict[str, dict[str, str]]) -> None:
+    """Sets the given labels, as {node name: {key: value}}, on the nodes."""
+    k8s_client = config.new_client_from_config(config_file=kubeconfig_path)
+    core_v1 = client.CoreV1Api(api_client=k8s_client)
+    for node, node_labels in labels.items():
+        core_v1.patch_node(node, {"metadata": {"labels": node_labels}})

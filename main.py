@@ -1,20 +1,18 @@
-from core.input import validate_config_file, ClusterConfig, ToolConfig
-from core.modules import runtimes, cnis, tools, runtime_specs, tool_specs
+from core.input import validate_config_file, ClusterConfig
+from core.modules import runtimes, cnis, tools as tool_modules
 from core.types import Settings
 from core.namespaces import create_namespace
 from utils.kubeconfig import get_kubeconfig_location
-from core.cache import run_registry_proxy_container
 
 
 def create_settings(config: ClusterConfig) -> Settings:
     return Settings(
-        runtime=config.runtime.type.value,
+        runtime=config.runtime.type,
         cni=config.cni.type,
         name=config.name,
         nodes=config.nodes,
         cluster_cidr=config.cluster_cidr,
         service_cidr=config.service_cidr,
-        cache=config.cache,
     )
 
 
@@ -27,18 +25,16 @@ def create_cni_instance(config: ClusterConfig):
 
 
 def create_runtime_instance(config: ClusterConfig, cni):
-    return runtimes[config.runtime.type.value](
+    return runtimes[config.runtime.type](
         name=config.name,
         settings=create_settings(config),
-        spec=runtime_specs[config.runtime.type.value](**config.runtime.spec),
+        spec=config.runtime.spec,
         cni=cni,
     )
 
 
-def create_tool_instance(tool_config: ToolConfig):
-    return tools[tool_config.type](
-        spec=tool_specs[tool_config.type](**tool_config.spec),
-    )
+def create_tool_instance(tool_config):
+    return tool_modules[tool_config.type](spec=tool_config.spec)
 
 
 def main(config_file: str) -> None:
@@ -63,20 +59,25 @@ def main(config_file: str) -> None:
     for cluster in clusters.values():
         cluster["runtime"].check_dependencies()
         cluster["cni"].check_dependencies()
+    for tool in tools:
+        tool.check_dependencies()
 
     for cluster in clusters.values():
         cluster["runtime"].cleanup()
 
-    proxy_address = run_registry_proxy_container()  # TODO: only if needed
-
     # TODO: create network
+
+    # Hook: ONCE in total, before any cluster is created (shared infrastructure)
+    for tool in tools:
+        tool.before_all_operations(
+            all_settings=all_settings,
+            all_runtimes=all_runtimes,
+            all_cnis=all_cnis,
+        )
 
     # Per-cluster phase: clusters are created sequentially, and every tool hook
     # inside this loop runs once PER CLUSTER (for every tool).
     for cluster in clusters.values():
-        if cluster["runtime"].settings.cache:
-            cluster["runtime"].set_proxy(proxy_address)
-
         hook_args = {
             "settings": cluster["runtime"].settings,
             "runtime": cluster["runtime"],

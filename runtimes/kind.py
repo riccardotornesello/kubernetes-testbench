@@ -1,14 +1,25 @@
-import yaml
 import subprocess
 
-from pydantic import BaseModel
+import yaml
 
-from runtimes.base import BaseRuntime, CNI_PLUGINS_VERSION
-from utils.docker_utils import ensure_kernel_modules, install_cni_plugins
+from runtimes.base import (
+    BaseRuntime,
+    BaseRuntimeSpec,
+    CNI_PLUGINS_VERSION,
+    NODE_TIER_LABEL,
+    node_tier,
+)
+from core.settings import DOCKER_NETWORK_NAME
+from utils.docker_utils import (
+    client as docker_client,
+    ensure_kernel_modules,
+    install_cni_plugins,
+)
 from utils.kubeconfig import get_kubeconfig_location
 
 
-class KindClusterSpec(BaseModel):
+class KindClusterSpec(BaseRuntimeSpec):
+    # Node image: determines the Kubernetes version
     image: str = "kindest/node:v1.30.0"
 
 
@@ -41,8 +52,8 @@ class KindCluster(BaseRuntime[KindClusterSpec]):
             check=True,
         )
 
-        if self.proxy_address is not None:
-            self._install_cache_proxy()
+        if self.node_proxy is not None:
+            self._configure_node_proxy()
 
     def cleanup(self) -> None:
         subprocess.run(
@@ -51,10 +62,11 @@ class KindCluster(BaseRuntime[KindClusterSpec]):
         )
 
     def get_api_server_address(self) -> str:
-        kubeconfig_location = get_kubeconfig_location(self.name)
-        with open(kubeconfig_location) as f:
-            kubeconfig_content = yaml.safe_load(f)
-        return kubeconfig_content["clusters"][0]["cluster"]["server"]
+        # The kubeconfig points to the port forwarded on 127.0.0.1: use the
+        # control plane container address on the shared docker network.
+        container = docker_client.containers.get(f"{self.name}-control-plane")
+        networks = container.attrs["NetworkSettings"]["Networks"]
+        return f"https://{networks[DOCKER_NETWORK_NAME]['IPAddress']}:6443"
 
     def _get_nodes(self) -> list[str]:
         result = subprocess.run(
@@ -80,17 +92,11 @@ class KindCluster(BaseRuntime[KindClusterSpec]):
         # kindest/node ships only host-local, loopback, portmap and ptp
         install_cni_plugins(self._get_nodes(), plugins, CNI_PLUGINS_VERSION)
 
-    def _install_cache_proxy(self) -> None:
+    def _configure_node_proxy(self) -> None:
+        script = self.node_proxy_setup_script(service="containerd")
         for node in self._get_nodes():
             subprocess.run(
-                [
-                    "docker",
-                    "exec",
-                    node,
-                    "sh",
-                    "-c",
-                    f"curl {self.proxy_address}/setup/systemd | sed s/docker\\.service/containerd\\.service/g | sed '/Environment/ s/$/ \"NO_PROXY=ttl.sh,storage.googleapis.com,127.0.0.0\\/8,10.0.0.0\\/8,172.16.0.0\\/12,192.168.0.0\\/16\"/' | bash",
-                ],
+                ["docker", "exec", node, "sh", "-c", script],
                 check=True,
             )
 
@@ -107,18 +113,11 @@ class KindCluster(BaseRuntime[KindClusterSpec]):
             },
             "nodes": [
                 {
-                    "role": "control-plane",
+                    "role": "control-plane" if i == 0 else "worker",
                     "image": self.spec.image,
-                    "labels": {"tier": "worker-0"},
-                },
-                *[
-                    {
-                        "role": "worker",
-                        "image": self.spec.image,
-                        "labels": {"tier": f"worker-{i}"},
-                    }
-                    for i in range(1, self.settings.nodes)
-                ],
+                    "labels": {NODE_TIER_LABEL: node_tier(i)},
+                }
+                for i in range(self.settings.nodes)
             ],
         }
 

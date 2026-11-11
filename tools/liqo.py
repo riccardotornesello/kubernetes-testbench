@@ -1,10 +1,10 @@
 import subprocess
 from typing import Type, List, Optional, Tuple, Dict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from core.types import Settings
-from tools.base import BaseTool
+from tools.base import BaseTool, BaseToolSpec, check_known_clusters
 from runtimes.base import BaseRuntime
 from cnis.base import BaseCNI, find_object
 from cnis.calico import CalicoCNI
@@ -20,14 +20,27 @@ NOT_ON_LIQO_VIRTUAL_NODES = {
 
 
 class LiqoInstallationConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     cluster: str
     version: Optional[str] = None
     offloadings: List[str] = Field(default_factory=list)
 
 
-class LiqoToolSpec(BaseModel):
+class LiqoToolSpec(BaseToolSpec):
     installations: List[LiqoInstallationConfig] = Field(default_factory=list)
     peerings: List[Tuple[str, str]] = Field(default_factory=list)
+
+    def validate_clusters(self, clusters: list[str]) -> None:
+        installed = [inst.cluster for inst in self.installations]
+        check_known_clusters(installed, clusters)
+        not_installed = sorted(
+            {c for peering in self.peerings for c in peering} - set(installed)
+        )
+        if not_installed:
+            raise ValueError(
+                f"peerings refer to clusters without a Liqo installation: {not_installed}"
+            )
 
 
 class LiqoTool(BaseTool[LiqoToolSpec]):
@@ -121,7 +134,7 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
                 kubeconfig=get_kubeconfig_location(cluster_a.name),
                 remote_kubeconfig=get_kubeconfig_location(cluster_b.name),
                 gw_server_service_type="LoadBalancer"
-                if cluster_b.runtime == "k3d"
+                if cluster_b.runtime.type == "k3d"
                 else "NodePort",
             )
 

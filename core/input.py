@@ -2,11 +2,11 @@ import ipaddress
 import yaml
 import os
 from typing import Annotated, List, Literal, Optional, Any, Union
-from enum import Enum
 
 from pydantic import (
     BaseModel,
     BeforeValidator,
+    ConfigDict,
     Field,
     create_model,
     field_validator,
@@ -14,27 +14,10 @@ from pydantic import (
     ValidationError,
 )
 
-from core.modules import runtimes, tools, cni_specs
+from core.modules import tool_specs, cni_specs, runtime_specs
 
 
-Runtimes = Enum(
-    "Runtimes",
-    ((value, value) for value in list(runtimes.keys())),
-    type=str,
-)
-Tools = Enum(
-    "Tools",
-    ((value, value) for value in list(tools.keys())),
-    type=str,
-)
-
-
-class RuntimeConfig(BaseModel):
-    type: Runtimes
-    spec: dict = Field(default_factory=dict)  # TODO: validate
-
-
-def _cni_config_model(name: str, spec_cls: type[BaseModel]) -> type[BaseModel]:
+def _typed_config_model(name: str, spec_cls: type[BaseModel]) -> type[BaseModel]:
     return create_model(
         f"{spec_cls.__name__}Config",
         type=(Literal[name], ...),
@@ -42,20 +25,32 @@ def _cni_config_model(name: str, spec_cls: type[BaseModel]) -> type[BaseModel]:
     )
 
 
-def _cni_shorthand(value: Any) -> Any:
-    # `cni: flannel` is a shorthand for `cni: {type: flannel}`
+def _type_shorthand(value: Any) -> Any:
+    # `cni: flannel` is a shorthand for `cni: {type: flannel}` (same for
+    # runtimes and tools)
     if isinstance(value, str):
         return {"type": value}
     return value
 
 
-# `cni: {type: <name>, spec: {...}}`, where `spec` is validated against the
-# spec model exported by cnis/<name>.py
-CNIConfig = Annotated[
-    Union[tuple(_cni_config_model(n, s) for n, s in cni_specs.items())],
-    Field(discriminator="type"),
-    BeforeValidator(_cni_shorthand),
-]
+def _typed_config(specs: dict[str, type[BaseModel]]) -> Any:
+    """
+    `{type: <name>, spec: {...}}`, where `spec` is validated against the spec
+    model exported by the <name> module. A plain string is the type alone.
+    """
+    return Annotated[
+        Union[tuple(_typed_config_model(n, s) for n, s in specs.items())],
+        Field(discriminator="type"),
+        BeforeValidator(_type_shorthand),
+    ]
+
+
+# `runtime: {type: <name>, spec: {...}}`, spec from runtimes/<name>.py
+RuntimeConfig = _typed_config(runtime_specs)
+# `cni: {type: <name>, spec: {...}}`, spec from cnis/<name>.py
+CNIConfig = _typed_config(cni_specs)
+# `- {type: <name>, spec: {...}}` in `tools`, spec from tools/<name>.py
+ToolConfig = _typed_config(tool_specs)
 
 DEFAULT_CNI = "flannel"
 DEFAULT_CLUSTER_CIDR = "10.244.0.0/16"
@@ -69,19 +64,6 @@ def _validate_ipv4_network(value: str | None) -> str | None:
         return str(ipaddress.IPv4Network(value, strict=True))
     except ValueError as e:
         raise ValueError(f"invalid IPv4 CIDR '{value}': {e}") from e
-
-
-class CommonConfig(BaseModel):
-    runtime: Optional[RuntimeConfig] = None
-    cni: Optional[CNIConfig] = None
-    nodes: int = Field(default=1, ge=1)
-    cluster_cidr: str | None = None
-    service_cidr: str | None = None
-    cache: bool = False
-
-    _validate_cidrs = field_validator("cluster_cidr", "service_cidr")(
-        _validate_ipv4_network
-    )
 
 
 class DeploymentConfig(BaseModel):
@@ -107,7 +89,26 @@ class NamespaceConfig(BaseModel):
     pods: List[PodConfig] = Field(default_factory=list)  # TODO: validate
 
 
+class CommonConfig(BaseModel):
+    """`default`: every cluster field but `name`, copied into each cluster."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    runtime: Optional[RuntimeConfig] = None
+    cni: Optional[CNIConfig] = None
+    nodes: int = Field(default=1, ge=1)
+    cluster_cidr: str | None = None
+    service_cidr: str | None = None
+    namespaces: Optional[List[NamespaceConfig]] = None
+
+    _validate_cidrs = field_validator("cluster_cidr", "service_cidr")(
+        _validate_ipv4_network
+    )
+
+
 class ClusterConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
 
     runtime: RuntimeConfig
@@ -115,7 +116,6 @@ class ClusterConfig(BaseModel):
     nodes: int = Field(default=1, ge=1)
     cluster_cidr: str = DEFAULT_CLUSTER_CIDR
     service_cidr: str = DEFAULT_SERVICE_CIDR
-    cache: bool = False
 
     namespaces: List[NamespaceConfig] = Field(default_factory=list)
 
@@ -147,15 +147,12 @@ class ClusterConfig(BaseModel):
         return self
 
 
-class ToolConfig(BaseModel):
-    type: Tools
-    spec: dict = Field(default_factory=dict)  # TODO: validate
-
-
 class RootConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     default: Optional[CommonConfig] = None
     clusters: List[ClusterConfig]
-    tools: Optional[List[ToolConfig]] = Field(default_factory=list)
+    tools: List[ToolConfig] = Field(default_factory=list)
 
     @model_validator(mode="before")
     def merge_defaults(cls, data):
@@ -187,6 +184,16 @@ class RootConfig(BaseModel):
 
         return self
 
+    @model_validator(mode="after")
+    def validate_tools(self):
+        cluster_names = [cluster.name for cluster in self.clusters]
+        for i, tool in enumerate(self.tools):
+            try:
+                tool.spec.validate_clusters(cluster_names)
+            except ValueError as e:
+                raise ValueError(f"tools.{i} ({tool.type}): {e}") from e
+        return self
+
 
 def format_pydantic_error(err):
     """
@@ -197,7 +204,7 @@ def format_pydantic_error(err):
     # Remove 'root.' prefix if present for cleaner output
     if loc_path.startswith("root."):
         loc_path = loc_path[5:]
-    return f"{loc_path}: {err['msg']}"
+    return f"{loc_path}: {err['msg']}" if loc_path else err["msg"]
 
 
 def validate_data(raw_data: Any) -> Optional[RootConfig]:

@@ -16,7 +16,6 @@ default:
 
 clusters:
   - name: "rome"
-    cache: true
     namespaces:
       - name: "nlr"
         pods:
@@ -121,7 +120,6 @@ clusters:
                   port: 80
                   targetPort: 80
   - name: "milan"
-    cache: true
     namespaces:
       - name: "nlm"
         pods:
@@ -160,6 +158,9 @@ clusters:
                   targetPort: 80
 
 tools:
+  # Caching registry proxy: the nodes of every cluster (or of `clusters`)
+  # pull their images through it. See tools/registry_proxy.py.
+  - type: "registry_proxy"
   - type: "liqo"
     spec:
       installations:

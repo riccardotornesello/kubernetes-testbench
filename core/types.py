@@ -9,4 +9,3 @@ class Settings:
     nodes: int
     cluster_cidr: str
     service_cidr: str
-    cache: bool

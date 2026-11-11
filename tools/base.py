@@ -1,13 +1,38 @@
 from abc import ABC
 from typing import Generic, TypeVar, Type, Dict
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from core.types import Settings
 from runtimes.base import BaseRuntime
 from cnis.base import BaseCNI
 
-SpecT = TypeVar("SpecT", bound=BaseModel)
+
+class BaseToolSpec(BaseModel):
+    """
+    Parameters of a tool. Each tool subclasses this model, adding its own
+    parameters. Unknown parameters are rejected.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    def validate_clusters(self, clusters: list[str]) -> None:
+        """
+        Validates the spec against the names of the configured clusters (e.g.
+        the clusters it refers to must exist). Raise ValueError on error.
+        Called during the configuration validation.
+        """
+        return
+
+
+def check_known_clusters(referenced: list[str], clusters: list[str]) -> None:
+    """Raises ValueError if any of `referenced` is not a configured cluster."""
+    unknown = sorted(set(referenced) - set(clusters))
+    if unknown:
+        raise ValueError(f"unknown clusters {unknown} (configured: {clusters})")
+
+
+SpecT = TypeVar("SpecT", bound=BaseToolSpec)
 
 
 class BaseTool(ABC, Generic[SpecT]):
@@ -16,6 +41,7 @@ class BaseTool(ABC, Generic[SpecT]):
 
     Hook execution order (see main.py):
 
+        before_all_operations(...)    -> ONCE in total, before any cluster
         for each cluster (sequentially, in config order):
             pre_cluster_init(...)     -> once PER CLUSTER
             <runtime creates cluster>
@@ -33,6 +59,20 @@ class BaseTool(ABC, Generic[SpecT]):
 
     def __init__(self, spec: SpecT) -> None:
         self.spec = spec
+
+    def check_dependencies(self) -> None:
+        pass
+
+    def before_all_operations(
+        self,
+        all_settings: Dict[str, Settings],
+        all_runtimes: Dict[str, BaseRuntime],
+        all_cnis: Dict[str, BaseCNI],
+    ) -> None:
+        # Called ONCE in total, after the old clusters are deleted and before
+        # any cluster is created. Use it to set up shared infrastructure
+        # (e.g. the registry proxy). Same arguments as after_all_operations.
+        pass
 
     def pre_cluster_init(
         self,
@@ -88,5 +128,5 @@ class BaseTool(ABC, Generic[SpecT]):
         # created.
         # NOTE: `all_settings` actually contains ClusterConfig objects (from
         # core.input), not core.types.Settings: e.g. `.runtime` is a
-        # RuntimeConfig, not a string.
+        # RuntimeConfig (`.runtime.type` is the runtime name), not a string.
         pass

@@ -1,18 +1,17 @@
 ## Execution flow
 
-Steps executed by `main.py`. Blue = Kubernetes/cluster configuration, orange = tool hooks, grey = internal steps (config, dependencies, cache).
+Steps executed by `main.py`. Blue = Kubernetes/cluster configuration, orange = tool hooks, grey = internal steps (config, dependencies).
 
 ```mermaid
 flowchart TD
     A([Start: python main.py config.yaml]) --> B[Load and validate YAML config<br/>merge defaults into clusters]
     B --> C[Instantiate tools, runtimes and CNIs]
-    C --> D[Check runtime and CNI dependencies<br/>for every cluster]
+    C --> D[Check runtime, CNI and tool dependencies]
     D --> E[Delete existing clusters<br/>runtime.cleanup for every cluster]
-    E --> F[Start registry proxy container]
+    E --> F[tool.before_all_operations<br/>once in total<br/>registry_proxy: start proxy container]
 
     F --> L{{For each cluster}}
-    L --> G[Set proxy on runtime<br/>if cache is enabled]
-    G --> H[tool.pre_cluster_init<br/>once per cluster]
+    L --> H[tool.pre_cluster_init<br/>once per cluster<br/>registry_proxy: runtime.set_node_proxy]
     H --> I[Create cluster<br/>runtime.init_cluster + kubeconfig]
     I --> J[tool.post_cluster_init<br/>once per cluster]
     J --> J2[tool.pre_cni_install<br/>once per cluster]
@@ -29,10 +28,79 @@ flowchart TD
     classDef k8s fill:#bbdefb,stroke:#1565c0,color:#000
     classDef tool fill:#ffe0b2,stroke:#ef6c00,color:#000
 
-    class A,B,C,D,F,G,L,N,Q internal
+    class A,B,C,D,L,N,Q internal
     class E,I,K,P k8s
-    class H,J,J2,M,O tool
+    class F,H,J,J2,M,O tool
 ```
+
+## Runtime
+
+Same structure as `cni`: `runtime: kind` is a shorthand for `runtime: {type: kind}`,
+and `spec` is validated against `runtimes/<type>.py` (unknown fields are rejected).
+
+```yaml
+runtime:
+  type: minikube         # kind | k3d | minikube
+  spec:
+    kubernetes_version: "1.30.0"
+    driver: kvm2
+```
+
+Every runtime creates `nodes` nodes (the first is the control plane) with the
+given `cluster_cidr`/`service_cidr`, labels the i-th node `tier=worker-<i>`,
+and writes a kubeconfig containing only that cluster to `out/kubeconfigs/<name>.yaml`.
+
+Runtimes contain no tool-specific logic: tools customize the cluster through
+generic options set in `pre_cluster_init`, e.g. `runtime.set_node_proxy(NodeProxy)`
+(the container runtime of the nodes pulls through an HTTP(S) proxy, trusting
+its CA; kind/minikube configure it on every node after creation, k3d at creation).
+
+| Runtime | Parameters | Notes |
+|---|---|---|
+| `kind` | `image` (default `kindest/node:v1.30.0`) | Kubernetes version = node image. |
+| `k3d` | `image` (default `rancher/k3s:v1.30.2-k3s2`), `disable` (`traefik`, `servicelb`, `metrics-server`, `local-storage`) | Kubernetes version = node image. `servicelb` provides `LoadBalancer` services (used by the Liqo gateway on k3d). |
+| `minikube` | `kubernetes_version` (default `1.30.0`), `driver` (`kvm2`, `docker`), `container_runtime` (`containerd`, `cri-o`, `docker`), `network`, `cpus`, `memory`, `disk_size` | `network` defaults to `testbenchnet` (libvirt, kvm2) or `kind` (docker, shared with kind/k3d and the registry proxy). Clusters must share a network to reach each other. |
+
+`runtime.get_api_server_address()` returns the API server URL reachable from the
+nodes of the other clusters (node address, not the port forwarded on the host).
+
+## Tools
+
+Same structure as `runtime`/`cni`: `- registry_proxy` is a shorthand for
+`- {type: registry_proxy}`, and `spec` is validated against `tools/<type>.py`
+(unknown fields and unknown cluster names are rejected).
+
+### registry_proxy
+
+Caching registry proxy ([rpardini/docker-registry-proxy](https://github.com/rpardini/docker-registry-proxy)),
+shared by every cluster: the nodes of the selected clusters pull their images
+through it. Cache and CA persist across runs in `out/registry-proxy`; the
+container is reused, and recreated only when its configuration changes.
+
+```yaml
+tools:
+  - type: registry_proxy
+    spec:
+      clusters: [rome]              # default: all clusters
+      registries: [registry.k8s.io, quay.io, ghcr.io, gcr.io]  # cached besides Docker Hub
+      manifest_cache: true
+      auth:                         # upstream credentials (e.g. Docker Hub rate limit)
+        - registry: auth.docker.io
+          username: myuser
+          password_env: DOCKERHUB_TOKEN   # env var name, not the secret
+      extra_no_proxy: [example.com]
+      host_port: 3128
+      timeout: 120
+```
+
+The proxy runs on the `kind` docker network. It is published on the host
+(`host_port`, all interfaces, so reachable from the LAN) only if a selected
+cluster has nodes outside that network (minikube `kvm2`).
+
+### liqo
+
+See `tools/liqo.py`: `installations` (`cluster`, `version`, `offloadings`) and
+`peerings` (pairs of installed clusters).
 
 ## CNI
 
