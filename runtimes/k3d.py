@@ -14,7 +14,7 @@ from runtimes.base import (
     node_tier,
 )
 from utils.docker_utils import (
-    client as docker_client,
+    get_client as docker_client,
     ensure_kernel_modules,
     install_cni_plugins,
 )
@@ -85,7 +85,7 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
         install_cni_plugins(self._get_nodes(), plugins, CNI_PLUGINS_VERSION)
 
     def _get_nodes(self) -> list[str]:
-        containers = docker_client.containers.list(
+        containers = docker_client().containers.list(
             filters={"label": f"k3d.cluster={self.name}"}
         )
         return [

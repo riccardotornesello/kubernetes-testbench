@@ -273,3 +273,30 @@ spec = HelloToolSpec
   it.
 - Generated files go to `--out-dir` (default `out`); in code use
   `core.paths.output_path(...)`.
+
+## Tests
+
+Unit tests in `tests/`, written with the standard `unittest` module (no
+extra dependency; pytest can run them too). They need neither Docker nor a
+cluster: external commands and the Kubernetes API are mocked. Run them from
+the repository root (components are discovered relative to it):
+
+```bash
+uv run python -m unittest            # all
+uv run python -m unittest tests.test_input -v
+```
+
+| File | Covers |
+|---|---|
+| `test_input.py` | Configuration validation: clusters, `default` (errors reported once), workloads, names, manifests (relative/absolute paths), tools, examples. |
+| `test_kubernetes_models.py` | Conversion and validation against the Kubernetes client models. |
+| `test_cnis.py` | CNI configuration generation, tool customizations (affinity, patches), CNI-specific validation. |
+| `test_runtimes.py` | kind/k3d configuration, minikube arguments, node proxy. |
+| `test_liqo.py` | Liqo spec validation, CNI customizations, `liqoctl` commands, retries. |
+| `test_commands.py` | `run_command`: output capture, errors. |
+| `test_retry.py` | Exponential backoff. |
+| `test_workloads.py` | Workload creation order, Kubernetes objects, manifest namespaces. |
+
+`tests/helpers.py` provides `make_settings`, `cluster` and
+`ValidationTestCase` (validates raw configurations in a temporary directory
+and captures the reported errors).

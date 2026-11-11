@@ -9,7 +9,7 @@ from runtimes.base import (
 )
 from core.settings import DOCKER_NETWORK_NAME
 from utils.docker_utils import (
-    client as docker_client,
+    get_client as docker_client,
     ensure_kernel_modules,
     install_cni_plugins,
 )
@@ -56,7 +56,7 @@ class KindCluster(BaseRuntime[KindClusterSpec]):
     def get_api_server_address(self) -> str:
         # The kubeconfig points to the port forwarded on 127.0.0.1: use the
         # control plane container address on the shared docker network.
-        container = docker_client.containers.get(f"{self.name}-control-plane")
+        container = docker_client().containers.get(f"{self.name}-control-plane")
         networks = container.attrs["NetworkSettings"]["Networks"]
         return f"https://{networks[DOCKER_NETWORK_NAME]['IPAddress']}:6443"
 

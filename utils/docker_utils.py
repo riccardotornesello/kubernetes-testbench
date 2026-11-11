@@ -1,3 +1,4 @@
+import functools
 import io
 import os
 import platform
@@ -12,7 +13,13 @@ from core.paths import output_path
 log = get_logger(__name__)
 
 
-client = docker.from_env()
+@functools.cache
+def get_client() -> docker.DockerClient:
+    """
+    Docker client, created on first use: importing this module does not
+    require a running Docker daemon (e.g. to validate a configuration).
+    """
+    return docker.from_env()
 
 
 def ensure_docker_container(
@@ -47,7 +54,7 @@ def ensure_docker_container(
 
         return container
 
-    container = client.containers.run(
+    container = get_client().containers.run(
         image=image,
         detach=detach,
         name=name,
@@ -64,7 +71,7 @@ def ensure_docker_container(
 
 def get_container(container_name: str) -> docker.models.containers.Container:
     try:
-        return client.containers.get(container_name)
+        return get_client().containers.get(container_name)
     except docker.errors.NotFound:
         return None
 
@@ -77,7 +84,7 @@ def ensure_docker_network(
     if network is not None:
         return network
 
-    network = client.networks.create(
+    network = get_client().networks.create(
         name=network_name,
         driver=driver,
         check_duplicate=True,
@@ -87,7 +94,7 @@ def ensure_docker_network(
 
 def get_network(network_name: str) -> docker.models.networks.Network | None:
     try:
-        return client.networks.get(network_name)
+        return get_client().networks.get(network_name)
     except docker.errors.NotFound:
         return None
 
@@ -147,7 +154,7 @@ def install_cni_plugins(
         payload = buffer.getvalue()
 
     for name in container_names:
-        container = client.containers.get(name)
+        container = get_client().containers.get(name)
         existing = container.exec_run(
             ["sh", "-c", f"mkdir -p {CNI_PLUGINS_BIN_DIR} && ls {CNI_PLUGINS_BIN_DIR}"]
         )
@@ -169,7 +176,7 @@ def ensure_kernel_modules(container_name: str, modules: list[str]) -> None:
     Loads the given kernel modules from inside a privileged node container
     (kind/k3d nodes share the host kernel).
     """
-    container = client.containers.get(container_name)
+    container = get_client().containers.get(container_name)
     for module in modules:
         if container.exec_run(["test", "-d", f"/sys/module/{module}"]).exit_code == 0:
             continue
