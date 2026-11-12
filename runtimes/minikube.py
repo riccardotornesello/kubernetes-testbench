@@ -5,6 +5,7 @@ import shlex
 import subprocess
 from typing import Literal, Optional
 
+import yaml
 from pydantic import Field
 
 from runtimes.base import (
@@ -15,6 +16,7 @@ from runtimes.base import (
     node_tier,
 )
 from core.log import get_logger
+from core.paths import output_path
 from utils.commands import run_command
 from utils.docker_utils import ensure_kernel_modules, install_cni_plugins
 from utils.kubeconfig import get_kubeconfig_location
@@ -31,6 +33,15 @@ CONTAINER_RUNTIME_SERVICES = {
     "containerd": "containerd",
     "cri-o": "crio",
     "docker": "docker",
+}
+
+# Applied by minikube as a "custom CNI" (see _write_cni_placeholder): a
+# harmless object, since an empty manifest makes kubectl apply fail
+CNI_PLACEHOLDER = {
+    "apiVersion": "v1",
+    "kind": "ConfigMap",
+    "metadata": {"name": "testbench-cni-placeholder", "namespace": "kube-system"},
+    "data": {"note": "The CNI is installed by the testbench, not by minikube"},
 }
 
 
@@ -60,13 +71,21 @@ class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
         # minikube reads/writes the kubeconfig at $KUBECONFIG: point it to the
         # kubeconfig of this cluster only, never to ~/.kube/config
         env = {**os.environ, "KUBECONFIG": self._kubeconfig}
+        # Profile first: after a `--` (e.g. `minikube ssh -- <command>`) it
+        # would be part of the remote command, and the default profile used
         return run_command(
-            ["minikube", *args, "-p", self.name], env=env, capture=capture
+            ["minikube", "-p", self.name, *args], env=env, capture=capture
         )
 
     @property
     def network_type(self) -> Literal["docker", "libvirt"]:
         return "libvirt" if self.spec.driver == "kvm2" else "docker"
+
+    @property
+    def kernel_wireguard(self) -> bool:
+        # The kernel of the minikube ISO is built without WireGuard
+        # (CONFIG_WIREGUARD is not set, checked on v1.39)
+        return self.spec.driver != "kvm2"
 
     def check_dependencies(self):
         run_command(["minikube", "version"], capture=True)
@@ -94,7 +113,7 @@ class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
             # built-in manifests ignore the CNI spec (e.g. flannel always uses
             # 10.244.0.0/16, whatever the cluster CIDR is)
             "--cni",
-            "false",
+            self._write_cni_placeholder(),
             "--service-cluster-ip-range",
             self.settings.service_cidr,
             "--extra-config",
@@ -134,6 +153,22 @@ class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
 
         if self.node_proxy is not None:
             self._configure_node_proxy()
+
+    def _write_cni_placeholder(self) -> str:
+        """
+        Writes the "custom CNI" manifest given to minikube, and returns its
+        path. `--cni false` is refused with the containerd and cri-o runtimes
+        ("The containerd container runtime requires CNI"); with a custom
+        manifest minikube applies it as is and installs no CNI. It also
+        disables the default bridge CNI configuration of the nodes (kept with
+        `--cni false`), so no pod gets an address outside the cluster CIDR
+        before the testbench installs the real CNI.
+        """
+        path = output_path("minikube", f"{self.name}-cni-placeholder.yaml")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            yaml.safe_dump(CNI_PLACEHOLDER, f)
+        return path
 
     def _route_pool(self) -> None:
         """

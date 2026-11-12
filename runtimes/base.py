@@ -106,6 +106,15 @@ class BaseRuntime(ABC, Generic[SpecT]):
         """
         return False
 
+    @property
+    def kernel_wireguard(self) -> bool:
+        """
+        Whether the kernel of the nodes supports WireGuard (container nodes
+        share the host kernel). Without it, Liqo uses the userspace
+        implementation for its gateway tunnel.
+        """
+        return True
+
     def set_node_proxy(self, proxy: NodeProxy) -> None:
         """
         Makes the container runtime of the nodes pull images through `proxy`.

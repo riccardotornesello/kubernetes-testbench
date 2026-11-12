@@ -37,6 +37,10 @@ LIQOCTL_PROVIDERS = {
     "minikube": "kubeadm",
 }
 
+# Liqo chart value: WireGuard implementation of the gateways, "kernel"
+# (default) or "userspace"
+WIREGUARD_IMPLEMENTATION_VALUE = "networking.gatewayTemplates.wireguard.implementation"
+
 
 class LiqoInstallationConfig(BaseModel):
     """A cluster where Liqo is installed."""
@@ -188,6 +192,13 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
                 # kind: CIDRs from the kube-controller-manager, API server
                 # address from the control plane node
                 provider_args = []
+
+        if not runtime.kernel_wireguard:
+            # Otherwise the gateway cannot create its tunnel interface
+            # ("operation not supported") and crash-loops
+            cluster_log = log.bind(cluster=runtime.name)
+            cluster_log.info("No WireGuard in the node kernel: Liqo uses userspace")
+            provider_args += ["--set", f"{WIREGUARD_IMPLEMENTATION_VALUE}=userspace"]
 
         self._install_in_cluster(
             installation=installation,

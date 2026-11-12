@@ -70,6 +70,7 @@ testbench before `init_cluster` with the type given by `network_type`.
 | `load_kernel_modules(modules)` | Loads kernel modules on the nodes (container-based runtimes). |
 | `network_type` | `docker` (default) or `libvirt`: type of the network created for the nodes. |
 | `provides_load_balancer` | Whether `LoadBalancer` services get a reachable address. |
+| `kernel_wireguard` | Whether the node kernel supports WireGuard (default `True`; `False` for minikube `kvm2`): if not, Liqo is installed with the userspace WireGuard implementation. |
 | `set_node_proxy(NodeProxy)` | Generic option set by tools before `init_cluster`: the container runtime of the nodes pulls through an HTTP(S) proxy, trusting its CA. Helpers: `node_no_proxy()`, `node_proxy_setup_script(service)`. |
 
 Runtimes contain no tool-specific logic: tools customize them only through
@@ -212,6 +213,11 @@ The gateway of the provider is exposed through a `LoadBalancer` service if
 `runtime.provides_load_balancer` (k3d unless `servicelb` is disabled),
 `NodePort` otherwise.
 
+On runtimes without `kernel_wireguard` (minikube `kvm2`), `liqoctl install`
+gets `--set networking.gatewayTemplates.wireguard.implementation=userspace`:
+with the kernel implementation the gateway fails to create `liqo-tunnel`
+("operation not supported") and crash-loops.
+
 ## Networks
 
 `core/networking.py`:
@@ -232,6 +238,12 @@ The gateway of the provider is exposed through a `LoadBalancer` service if
   libvirt one) builds the chains of `utils/firewall.py` and applies them
   with `iptables` (through `sudo` if not root), after
   `before_all_operations` and before the first cluster.
+
+minikube is started with `--cni <out>/minikube/<name>-cni-placeholder.yaml`
+(a "custom CNI" holding only a ConfigMap), not `--cni false`: minikube
+refuses `false` with the containerd and cri-o runtimes, and with `false` it
+keeps its default bridge CNI (10.244.0.0/16) active until the real CNI is
+installed.
 
 minikube `kvm2` also sets the route to the pool on every VM
 (`ip route replace <pool> via <gateway>`), since not every DHCP client
@@ -364,11 +376,14 @@ Every scenario runs on each selected runtime (`KindE2E`, `K3dE2E`,
 | `test_workloads` | Deployment, service, pod pinned to `worker-1`, manifest with a relative path; a Job reaches the service through the cluster DNS. |
 | `test_registry_proxy` | Proxy container running, pod image pulled through it (cache not empty). |
 | `test_liqo` | Two peered clusters: virtual node on the consumer, offloaded pod running on it. Needs `liqoctl`. |
+| `test_minikube_containerd`, `test_minikube_crio`, `test_minikube_docker_runtime` | minikube only: 2-node cluster with the container runtime, healthy, every pod address in the cluster CIDR (none from the minikube default bridge CNI). |
+| `test_minikube_kvm2` | minikube only: as above on `kvm2` VMs with Cilium (the runtime of `examples/liqo_minikube.yaml`). Needs `virsh`, `cilium` and `/dev/kvm`; uses a libvirt network, so it applies firewall rules (`sudo`). |
+| `test_minikube_kvm2_liqo` | minikube only: `test_liqo` on `kvm2` VMs with Cilium (`examples/liqo_minikube.yaml`): the gateways use userspace WireGuard. Needs `virsh`, `cilium`, `liqoctl`, `/dev/kvm` and `sudo`. |
 
 Every run must exit successfully and log no error (`--log-format json`).
 Scenarios with more than one network (`test_registry_proxy`, `test_liqo`)
-apply firewall rules: run the tests as root or with a valid `sudo`
-timestamp (`sudo -v` before).
+or with a libvirt network (`test_minikube_kvm2*`) apply firewall rules: run
+the tests as root or with a valid `sudo` timestamp (`sudo -v` before).
 Clusters are named `tbe2e-<runtime>-<scenario>`, so they never clash with
 other clusters, and are deleted at the end of each test. On a failed run the
 logs (`stderr` in the failure message, command output in `stdout.log`) are

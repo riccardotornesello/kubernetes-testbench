@@ -20,9 +20,13 @@ def liqo(**spec) -> LiqoTool:
     return LiqoTool(LiqoToolSpec(**spec))
 
 
-def runtime(name: str, load_balancer: bool = False) -> mock.Mock:
+def runtime(
+    name: str, load_balancer: bool = False, kernel_wireguard: bool = True
+) -> mock.Mock:
     """Runtime of the cluster `name` (`name` is a Mock argument: set after)."""
-    rt = mock.Mock(provides_load_balancer=load_balancer)
+    rt = mock.Mock(
+        provides_load_balancer=load_balancer, kernel_wireguard=kernel_wireguard
+    )
     rt.name = name
     rt.get_api_server_address.return_value = f"https://{name}:6443"
     return rt
@@ -121,10 +125,14 @@ class CniCustomizationTest(unittest.TestCase):
 
 @mock.patch("tools.liqo.run_command")
 class LiqoctlTest(unittest.TestCase):
-    def install(self, runtime_type: str, **installation) -> None:
+    def install(
+        self, runtime_type: str, kernel_wireguard: bool = True, **installation
+    ) -> None:
         tool = liqo(installations=[{"cluster": "a", **installation}])
         settings = make_settings(name="a", runtime=runtime_type)
-        tool.post_cni_install(settings, runtime("a"), None)
+        tool.post_cni_install(
+            settings, runtime("a", kernel_wireguard=kernel_wireguard), None
+        )
 
     def command(self, run) -> list[str]:
         return run.call_args.args[0]
@@ -162,6 +170,17 @@ class LiqoctlTest(unittest.TestCase):
         self.assertEqual(
             command[-2:], ["--set-string", "apiServer.address=https://a:6443"]
         )
+
+    def test_userspace_wireguard_without_kernel_support(self, run):
+        self.install("minikube", kernel_wireguard=False)
+        self.assertEqual(
+            self.command(run)[-2:],
+            ["--set", "networking.gatewayTemplates.wireguard.implementation=userspace"],
+        )
+
+    def test_kernel_wireguard_by_default(self, run):
+        self.install("kind")
+        self.assertNotIn("--set", self.command(run))
 
     def test_not_installed_cluster(self, run):
         liqo(installations=[{"cluster": "b"}]).post_cni_install(

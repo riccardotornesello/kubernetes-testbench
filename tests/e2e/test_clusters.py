@@ -5,6 +5,7 @@ runtime (see tests/e2e/base.py). Run with:
     TESTBENCH_E2E=1 uv run python -m unittest tests.e2e -v
 """
 
+import ipaddress
 import os
 import unittest
 
@@ -59,6 +60,9 @@ def remove_registry_proxy() -> None:
     container.remove(force=True)
 
 
+# minikube VMs (examples/liqo_minikube.yaml)
+KVM2_SPEC = {"driver": "kvm2", "cpus": 2, "memory": "4g"}
+
 NGINX_POD_SPEC = {"containers": [{"name": "nginx", "image": "nginx:1.27"}]}
 
 
@@ -99,6 +103,69 @@ class RuntimeE2E(E2ETestCase):
     def test_cilium(self):
         require(self, "cilium")
         self.check_cni("cilium")
+
+    # -- minikube -------------------------------------------------------------
+
+    def assert_pod_ips_in(self, cluster: str, cidr: str) -> None:
+        """Every pod not on the host network has an address in `cidr`."""
+        core = client.CoreV1Api(self.api(cluster))
+        outside = [
+            f"{p.metadata.namespace}/{p.metadata.name} ({p.status.pod_ip})"
+            for p in core.list_pod_for_all_namespaces().items
+            if not p.spec.host_network
+            and p.status.pod_ip
+            and ipaddress.ip_address(p.status.pod_ip) not in ipaddress.ip_network(cidr)
+        ]
+        self.assertEqual(outside, [], f"{cluster}: pods outside {cidr}")
+
+    def check_minikube(self, suffix: str, spec: dict, cni: str = "flannel") -> None:
+        if self.runtime != "minikube":
+            self.skipTest("minikube only")
+        cidr = "10.210.0.0/16"
+        cfg = self.single_cluster(suffix, nodes=2, cni=cni, cluster_cidr=cidr)
+        cfg["clusters"][0]["runtime"] = {"type": "minikube", "spec": spec}
+        self.run_testbench(cfg)
+        cluster = cfg["clusters"][0]["name"]
+        self.assert_cluster_healthy(cluster, nodes=2)
+        # No pod got an address from the minikube default bridge CNI
+        # (10.244.0.0/16) before the testbench installed its CNI
+        self.assert_pod_ips_in(cluster, cidr)
+
+    # One test per container runtime (each test deletes its cluster and
+    # network at the end). minikube refuses `--cni false` with containerd and
+    # cri-o.
+
+    def test_minikube_containerd(self):
+        self.check_minikube(
+            "containerd", {"driver": "docker", "container_runtime": "containerd"}
+        )
+
+    def test_minikube_crio(self):
+        self.check_minikube("crio", {"driver": "docker", "container_runtime": "cri-o"})
+
+    def test_minikube_docker_runtime(self):
+        self.check_minikube(
+            "dockerrt", {"driver": "docker", "container_runtime": "docker"}
+        )
+
+    def test_minikube_kvm2(self):
+        # Same runtime as examples/liqo_minikube.yaml: VMs, containerd, Cilium
+        require(self, "virsh", "cilium")
+        if not os.path.exists("/dev/kvm"):
+            self.skipTest("KVM not available")
+        self.check_minikube("kvm2", KVM2_SPEC, cni="cilium")
+
+    def test_minikube_kvm2_liqo(self):
+        # examples/liqo_minikube.yaml: the minikube ISO kernel has no
+        # WireGuard, the Liqo gateways must use the userspace implementation
+        require(self, "virsh", "cilium")
+        if self.runtime != "minikube":
+            self.skipTest("minikube only")
+        if not os.path.exists("/dev/kvm"):
+            self.skipTest("KVM not available")
+        self.check_liqo(
+            {"type": "minikube", "spec": KVM2_SPEC}, suffix="-vm", cni="cilium"
+        )
 
     # -- workloads ------------------------------------------------------------
 
@@ -214,10 +281,18 @@ class RuntimeE2E(E2ETestCase):
         self.assertTrue(output.strip(), "empty registry proxy cache")
 
     def test_liqo(self):
+        self.check_liqo(RUNTIME_CONFIGS[self.runtime])
+
+    def check_liqo(self, runtime_cfg, suffix: str = "", cni=None) -> None:
+        """Two clusters peered with Liqo, a pod offloaded to the provider."""
         require(self, "liqoctl")
-        consumer, provider = self.name("consumer"), self.name("provider")
+        consumer = self.name(f"consumer{suffix}")
+        provider = self.name(f"provider{suffix}")
+        default = {"runtime": runtime_cfg}
+        if cni is not None:
+            default["cni"] = cni
         cfg = {
-            "default": {"runtime": RUNTIME_CONFIGS[self.runtime]},
+            "default": default,
             "clusters": [
                 {
                     "name": consumer,

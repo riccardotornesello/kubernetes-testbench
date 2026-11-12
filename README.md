@@ -23,12 +23,12 @@ recreated.
 uv run python main.py <config.yaml> [--out-dir out] [--log-level INFO] [--log-format console]
 ```
 
-| Argument | Description |
-|---|---|
-| `config.yaml` | Configuration file (see [examples](#examples)). |
-| `--out-dir` | Directory of the generated files: kubeconfigs, caches, registry proxy data. Default `out`. |
-| `--log-level` | `DEBUG`, `INFO` (default), `WARNING`, `ERROR`. `DEBUG` also shows the external commands (kind, liqoctl, ...) and their output; otherwise the output is shown only when a command fails. |
-| `--log-format` | `console` (default) or `json` (one object per line). |
+| Argument       | Description                                                                                                                                                                             |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config.yaml`  | Configuration file (see [examples](#examples)).                                                                                                                                         |
+| `--out-dir`    | Directory of the generated files: kubeconfigs, caches, registry proxy data. Default `out`.                                                                                              |
+| `--log-level`  | `DEBUG`, `INFO` (default), `WARNING`, `ERROR`. `DEBUG` also shows the external commands (kind, liqoctl, ...) and their output; otherwise the output is shown only when a command fails. |
+| `--log-format` | `console` (default) or `json` (one object per line).                                                                                                                                    |
 
 The kubeconfig of each cluster is written to `<out-dir>/kubeconfigs/<name>.yaml`:
 
@@ -54,27 +54,27 @@ milan (minikube, network testbench-milan 10.250.2.0/24)
 ## Configuration
 
 ```yaml
-default:              # optional: fields copied into every cluster that does not set them
+default: # optional: fields copied into every cluster that does not set them
   runtime: k3d
 
 clusters:
   - name: rome
-    runtime: kind     # required (here or in `default`)
-    cni: flannel      # default flannel
-    nodes: 2          # default 1
-    namespaces:       # optional workloads
+    runtime: kind # required (here or in `default`)
+    cni: flannel # default flannel
+    nodes: 2 # default 1
+    namespaces: # optional workloads
       - name: demo
         manifests: [app.yaml]
         deployments: [...]
         services: [...]
         pods: [...]
 
-network:              # optional: addresses and connectivity of the node networks
+network: # optional: addresses and connectivity of the node networks
   cidr: 10.250.0.0/16 # default
-  links:              # default: every cluster reaches every other one
+  links: # default: every cluster reaches every other one
     - [rome, milan]
 
-tools:                # optional
+tools: # optional
   - registry_proxy
 ```
 
@@ -84,33 +84,33 @@ validated before any cluster is touched. Full reference:
 
 ## Available components
 
-| Runtime | Description |
-|---|---|
-| `kind` | Clusters of docker containers ([kind](https://kind.sigs.k8s.io/)). |
-| `k3d` | k3s clusters of docker containers ([k3d](https://k3d.io/)), with `LoadBalancer` services. |
-| `minikube` | VMs (`kvm2` driver) or docker containers ([minikube](https://minikube.sigs.k8s.io/)). |
+| Runtime    | Description                                                                               |
+| ---------- | ----------------------------------------------------------------------------------------- |
+| `kind`     | Clusters of docker containers ([kind](https://kind.sigs.k8s.io/)).                        |
+| `k3d`      | k3s clusters of docker containers ([k3d](https://k3d.io/)), with `LoadBalancer` services. |
+| `minikube` | VMs (`kvm2` driver) or docker containers ([minikube](https://minikube.sigs.k8s.io/)).     |
 
-| CNI | Description | Requirements |
-|---|---|---|
-| `flannel` | Default. Backends `vxlan`, `host-gw`, `wireguard`. | - |
-| `calico` | Through the Tigera operator; `Iptables`, `Nftables` or `BPF` dataplane. | - |
-| `cilium` | Optional kube-proxy replacement. | `cilium` CLI |
+| CNI       | Description                                                             | Requirements |
+| --------- | ----------------------------------------------------------------------- | ------------ |
+| `flannel` | Default. Backends `vxlan`, `host-gw`, `wireguard`.                      | -            |
+| `calico`  | Through the Tigera operator; `Iptables`, `Nftables` or `BPF` dataplane. | -            |
+| `cilium`  | Optional kube-proxy replacement.                                        | `cilium` CLI |
 
-| Tool | Description | Requirements |
-|---|---|---|
-| `registry_proxy` | Caching proxy for container images, shared by the clusters: faster recreations. Recommended to avoid the Docker Hub pull rate limit, but **not secure**: the nodes trust its CA (it intercepts their TLS traffic). It runs on the infrastructure network, reachable only from the host and the clusters. | - |
-| `liqo` | Installs [Liqo](https://liqo.io) on the selected clusters, peers them and offloads namespaces. | `liqoctl` |
+| Tool             | Description                                                                                                                                                                                                                                                                                              | Requirements |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| `registry_proxy` | Caching proxy for container images, shared by the clusters: faster recreations. Recommended to avoid the Docker Hub pull rate limit, but **not secure**: the nodes trust its CA (it intercepts their TLS traffic). It runs on the infrastructure network, reachable only from the host and the clusters. | -            |
+| `liqo`           | Installs [Liqo](https://liqo.io) on the selected clusters, peers them and offloads namespaces.                                                                                                                                                                                                           | `liqoctl`    |
 
 ## Networks
 
 Every cluster has a network of its own, whatever its runtime, with a /24 of
 a single address pool (`network.cidr`, default `10.250.0.0/16`):
 
-| Network | Subnet | Type | Used by |
-|---|---|---|---|
-| `testbench_infra` | 1st /24 (`10.250.0.0/24`) | docker | registry proxy (created only if used) |
-| `testbench-<cluster>` | next /24s, in configuration order | docker | kind, k3d and minikube (`docker` driver) nodes |
-| `testbench-<cluster>` | same | libvirt | minikube (`kvm2` driver) VMs |
+| Network               | Subnet                            | Type    | Used by                                        |
+| --------------------- | --------------------------------- | ------- | ---------------------------------------------- |
+| `testbench_infra`     | 1st /24 (`10.250.0.0/24`)         | docker  | registry proxy (created only if used)          |
+| `testbench-<cluster>` | next /24s, in configuration order | docker  | kind, k3d and minikube (`docker` driver) nodes |
+| `testbench-<cluster>` | same                              | libvirt | minikube (`kvm2` driver) VMs                   |
 
 The networks are created by the testbench before the clusters (an existing
 network with a different configuration is recreated). The pool must not
@@ -127,7 +127,7 @@ masqueraded as usual.
 
 ```yaml
 network:
-  links:              # rome <-> milan and milan <-> turin, rome and turin isolated
+  links: # rome <-> milan and milan <-> turin, rome and turin isolated
     - [rome, milan]
     - [milan, turin]
 ```
@@ -137,11 +137,11 @@ testbench, rebuilt at every run (`sudo` asks the password once, at the
 start). They are needed, and applied, when there is more than one network
 (two clusters, or a cluster and the registry proxy) or a libvirt network:
 
-| Chain | Jumped from | Content |
-|---|---|---|
-| `filter TESTBENCH-FORWARD` | `DOCKER-USER` (`FORWARD` without Docker) | Accepts the traffic within a network (bridged), between linked clusters and with the infrastructure network; drops the rest between testbench networks. |
-| `nat TESTBENCH-POSTROUTING` | `POSTROUTING` | No masquerading between testbench networks. |
-| `filter TESTBENCH-INPUT` | `INPUT` | DHCP and DNS of the libvirt networks (dnsmasq on the host). |
+| Chain                       | Jumped from                              | Content                                                                                                                                                 |
+| --------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `filter TESTBENCH-FORWARD`  | `DOCKER-USER` (`FORWARD` without Docker) | Accepts the traffic within a network (bridged), between linked clusters and with the infrastructure network; drops the rest between testbench networks. |
+| `nat TESTBENCH-POSTROUTING` | `POSTROUTING`                            | No masquerading between testbench networks.                                                                                                             |
+| `filter TESTBENCH-INPUT`    | `INPUT`                                  | DHCP and DNS of the libvirt networks (dnsmasq on the host).                                                                                             |
 
 The docker networks use `com.docker.network.bridge.gateway_mode_ipv4=nat-unprotected`
 (Docker ≥ 28), so that Docker does not drop the packets routed to the
@@ -179,8 +179,7 @@ Developed on Linux (Ubuntu) with Docker 29 and the iptables backend.
   (kind, k3d, minikube `docker` driver), the testbench requires the
   **iptables** firewall backend of Docker (the default; `iptables+firewalld`
   is accepted) and stops with an error otherwise. With the nftables backend
-  (`"firewall-backend": "nftables"` in `/etc/docker/daemon.json`, Docker ≥
-  29) Docker does not create the `DOCKER-USER` chain, and its nftables rules
+  (`"firewall-backend": "nftables"` in `/etc/docker/daemon.json`, Docker ≥ 29) Docker does not create the `DOCKER-USER` chain, and its nftables rules
   would drop the traffic routed between the networks whatever the testbench
   rules.
 - **Fedora (firewalld).** On Fedora (and derivatives) the testbench prints a
@@ -202,17 +201,24 @@ Developed on Linux (Ubuntu) with Docker 29 and the iptables backend.
 - **Docker < 28** has no `nat-unprotected` gateway mode: the networks use
   the default one, which on these versions does not block the routed
   traffic.
+- **minikube `kvm2` and Liqo.** The kernel of the minikube ISO is built
+  without WireGuard (`CONFIG_WIREGUARD` not set, minikube v1.39), so the
+  Liqo gateways cannot create their kernel tunnel. On these clusters the
+  testbench installs Liqo with the userspace WireGuard implementation
+  (`networking.gatewayTemplates.wireguard.implementation=userspace`), which
+  works but has a lower throughput: keep it in mind for network
+  measurements. Other runtimes (and minikube `docker`) use the host kernel.
 - **macOS / Windows** are not supported: Docker Desktop runs the containers
   in a VM, whose networks the host cannot route.
 
 ## Examples
 
-| File | Content |
-|---|---|
-| [examples/minimal.yaml](examples/minimal.yaml) | One kind cluster, all defaults. |
-| [examples/workloads.yaml](examples/workloads.yaml) | One k3d cluster with Calico, a deployment, a service, a pod and a [YAML manifest](examples/manifests/hello.yaml). |
-| [examples/liqo_k3d.yaml](examples/liqo_k3d.yaml) | Two k3d clusters peered with Liqo, a pod offloaded to the provider, registry proxy. |
-| [examples/liqo_minikube.yaml](examples/liqo_minikube.yaml) | Two minikube VMs with Cilium, peered with Liqo. |
+| File                                                       | Content                                                                                                           |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| [examples/minimal.yaml](examples/minimal.yaml)             | One kind cluster, all defaults.                                                                                   |
+| [examples/workloads.yaml](examples/workloads.yaml)         | One k3d cluster with Calico, a deployment, a service, a pod and a [YAML manifest](examples/manifests/hello.yaml). |
+| [examples/liqo_k3d.yaml](examples/liqo_k3d.yaml)           | Two k3d clusters peered with Liqo, a pod offloaded to the provider, registry proxy.                               |
+| [examples/liqo_minikube.yaml](examples/liqo_minikube.yaml) | Two minikube VMs with Cilium, peered with Liqo.                                                                   |
 
 ## Documentation
 

@@ -25,7 +25,9 @@ from typing import Any
 import yaml
 from kubernetes import client, config
 
+from core.settings import cluster_network_name
 from tests.helpers import REPO_ROOT
+from utils.libvirt_utils import LIBVIRT_URI
 
 ENABLED = os.environ.get("TESTBENCH_E2E") == "1"
 KEEP_CLUSTERS = os.environ.get("TESTBENCH_E2E_KEEP") == "1"
@@ -182,6 +184,19 @@ class E2ETestCase(unittest.TestCase):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            # The network of the cluster is created by the testbench, not by
+            # the runtime: removed here, otherwise the next test (same /24,
+            # another network name) cannot create its own
+            network = cluster_network_name(name)
+            for command in (
+                ["docker", "network", "rm", network],
+                ["virsh", "-c", LIBVIRT_URI, "net-destroy", network],
+                ["virsh", "-c", LIBVIRT_URI, "net-undefine", network],
+            ):
+                if shutil.which(command[0]):
+                    subprocess.run(
+                        command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
         if self.keep_files:
             print(f"\nTestbench files kept in {self.out_dir}")
         else:

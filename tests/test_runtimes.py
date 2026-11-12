@@ -3,6 +3,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+import yaml
+
 import core.paths
 from cnis.calico import CalicoCNI, CalicoCNISpec
 from cnis.flannel import FlannelCNI, FlannelCNISpec
@@ -48,6 +50,20 @@ class NodeProxyTest(unittest.TestCase):
                 MinikubeCluster, MinikubeClusterSpec(driver="docker")
             ).network_type,
             "docker",
+        )
+
+    def test_kernel_wireguard(self):
+        self.assertTrue(make_runtime(KindCluster, KindClusterSpec()).kernel_wireguard)
+        # The minikube ISO kernel has no WireGuard; docker nodes use the host's
+        self.assertFalse(
+            make_runtime(
+                MinikubeCluster, MinikubeClusterSpec(driver="kvm2")
+            ).kernel_wireguard
+        )
+        self.assertTrue(
+            make_runtime(
+                MinikubeCluster, MinikubeClusterSpec(driver="docker")
+            ).kernel_wireguard
         )
 
     def test_no_proxy_includes_cluster_cidrs(self):
@@ -225,12 +241,17 @@ class MinikubeTest(unittest.TestCase):
         args = self.start_args(
             make_runtime(MinikubeCluster, MinikubeClusterSpec(cpus=4, memory="4g"))
         )
-        self.assertEqual(args[:2], ["minikube", "start"])
-        self.assertEqual(args[-2:], ["-p", "test"])
+        self.assertEqual(args[:4], ["minikube", "-p", "test", "start"])
         self.assertEqual(self.flag(args, "--nodes"), ["3"])
         self.assertEqual(self.flag(args, "--kubernetes-version"), ["v1.30.0"])
         self.assertEqual(self.flag(args, "--network"), ["testbench-test"])
-        self.assertEqual(self.flag(args, "--cni"), ["false"])
+        # Not "false": refused by minikube with containerd and cri-o
+        (cni,) = self.flag(args, "--cni")
+        self.assertEqual(
+            cni, os.path.join(self._tmp.name, "minikube", "test-cni-placeholder.yaml")
+        )
+        with open(cni) as f:
+            self.assertEqual(yaml.safe_load(f)["kind"], "ConfigMap")
         self.assertEqual(
             self.flag(args, "--service-cluster-ip-range"), ["10.96.0.0/16"]
         )
@@ -248,7 +269,8 @@ class MinikubeTest(unittest.TestCase):
         self.assertEqual(
             commands[1:],
             [
-                ["minikube", "ssh", "-n", node, "--", route, "-p", "test"]
+                # Profile before `--`: after it, part of the remote command
+                ["minikube", "-p", "test", "ssh", "-n", node, "--", route]
                 for node in ("test", "test-m02")
             ],
         )
