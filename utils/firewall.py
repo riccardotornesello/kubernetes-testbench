@@ -178,3 +178,28 @@ def apply_chains(chains: list[Chain]) -> None:
             parent=parent,
             rules=len(chain.rules),
         )
+
+
+# Chains of the testbench and their candidate parents (see build_chains)
+TESTBENCH_CHAINS = [
+    ("filter", FORWARD_CHAIN, ["DOCKER-USER", "FORWARD"]),
+    ("nat", NAT_CHAIN, ["POSTROUTING"]),
+    ("filter", INPUT_CHAIN, ["INPUT"]),
+]
+
+
+def remove_chains() -> None:
+    """Removes the testbench chains and the jumps to them, if they exist."""
+    for table, chain, parents in TESTBENCH_CHAINS:
+        if not _chain_exists(table, chain):
+            continue
+        for parent in parents:
+            if not _chain_exists(table, parent):
+                continue
+            jump = f"-A {parent} -j {chain}"
+            rules = _iptables(table, "-S", parent).splitlines()
+            for _ in range(sum(1 for rule in rules if rule.strip() == jump)):
+                _iptables(table, "-D", parent, "-j", chain)
+        _iptables(table, "-F", chain)
+        _iptables(table, "-X", chain)
+        log.debug("Firewall chain removed", table=table, chain=chain)

@@ -60,6 +60,11 @@ class KindCluster(BaseRuntime[KindClusterSpec]):
         if self.node_proxy is not None:
             self._configure_node_proxy()
 
+    def exists(self) -> bool:
+        result = run_command(["kind", "get", "clusters"], capture=True)
+        # "No kind clusters found." goes to stderr
+        return self.name in result.stdout.split()
+
     def cleanup(self) -> None:
         run_command(["kind", "delete", "cluster", "--name", self.name])
 

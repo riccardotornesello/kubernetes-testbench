@@ -168,3 +168,23 @@ def apply_firewall(plan: NetworkPlan, runtimes: dict[str, Any], infra: bool) -> 
         or "-",
     )
     firewall.apply_chains(chains)
+
+
+def remove_networks(plan: NetworkPlan, runtimes: dict[str, Any]) -> None:
+    """
+    Removes the networks of the clusters and the infrastructure one (if
+    unused), after the clusters are deleted.
+    """
+    for name, runtime in runtimes.items():
+        network = plan.clusters[name]
+        if runtime.network_type == "libvirt":
+            libvirt_utils.remove_libvirt_network(network.name)
+        else:
+            docker_utils.remove_docker_network(network.name)
+    docker_utils.remove_docker_network(plan.infra.name)
+
+
+def remove_firewall() -> None:
+    """Removes the routing rules between the networks."""
+    log.info("Removing firewall rules")
+    firewall.remove_chains()

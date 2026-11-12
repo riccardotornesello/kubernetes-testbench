@@ -1,7 +1,8 @@
 """k3d runtime: k3s clusters of docker containers."""
 
-import yaml
+import json
 import os
+import yaml
 from typing import Literal
 
 from kubernetes import config, client
@@ -72,6 +73,12 @@ class K3dRuntime(BaseRuntime[K3dRuntimeSpec]):
         fd = os.open(kubeconfig_location, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write(kubeconfig_content)
+
+    def exists(self) -> bool:
+        result = run_command(["k3d", "cluster", "list", "-o", "json"], capture=True)
+        return any(
+            c.get("name") == self.name for c in json.loads(result.stdout or "[]")
+        )
 
     def cleanup(self) -> None:
         run_command(["k3d", "cluster", "delete", self.name])

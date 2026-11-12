@@ -132,7 +132,10 @@ class E2ETestCase(unittest.TestCase):
                 [
                     sys.executable,
                     "main.py",
+                    "up",
                     config_path,
+                    # Never ask: no terminal, and leftovers of a failed run
+                    "--force",
                     "--out-dir",
                     self.out_dir,
                     "--log-format",

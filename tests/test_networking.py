@@ -9,6 +9,7 @@ from core.networking import (
     ensure_networks,
     is_firewalld_distribution,
     plan_networks,
+    remove_networks,
     uses_firewall,
 )
 from core.summary import format_table
@@ -144,6 +145,8 @@ class FakeIptables:
             self.chains[(table, rest[0])] = []
         elif op == "-F":
             self.chains[(table, rest[0])] = []
+        elif op == "-X":
+            del self.chains[(table, rest[0])]
         elif op == "-A":
             self.chains[(table, rest[0])].append(" ".join(rest[1:]))
         elif op == "-I":
@@ -193,6 +196,44 @@ class FirewallApplyTest(unittest.TestCase):
         fake = self.apply([chain], initial)
         self.assertEqual(fake.chains[("filter", "FORWARD")], ["-j TB", "-j OTHER"])
         self.assertFalse(any("-I" in c for c in fake.commands))
+
+
+class FirewallRemoveTest(unittest.TestCase):
+    def remove(self, initial):
+        fake = FakeIptables(initial)
+        with (
+            mock.patch("utils.firewall.run_command", side_effect=fake),
+            mock.patch("utils.firewall.os.geteuid", return_value=0),
+        ):
+            firewall.remove_chains()
+        return fake
+
+    def test_removes_chains_and_jumps(self):
+        fake = self.remove(
+            {
+                ("filter", "DOCKER-USER"): ["-j TESTBENCH-FORWARD", "-j RETURN"],
+                ("filter", "FORWARD"): ["-j DOCKER-USER"],
+                ("filter", "TESTBENCH-FORWARD"): ["-j ACCEPT"],
+                ("nat", "POSTROUTING"): ["-j TESTBENCH-POSTROUTING", "-j OTHER"],
+                ("nat", "TESTBENCH-POSTROUTING"): ["-j RETURN"],
+                ("filter", "INPUT"): [],
+            }
+        )
+        self.assertEqual(
+            fake.chains,
+            {
+                ("filter", "DOCKER-USER"): ["-j RETURN"],
+                ("filter", "FORWARD"): ["-j DOCKER-USER"],
+                ("nat", "POSTROUTING"): ["-j OTHER"],
+                ("filter", "INPUT"): [],
+            },
+        )
+
+    def test_nothing_to_remove(self):
+        initial = {("filter", "FORWARD"): ["-j OTHER"]}
+        fake = self.remove(dict(initial))
+        self.assertEqual(fake.chains, initial)
+        self.assertTrue(all(c[4] == "-n" for c in fake.commands))
 
 
 class HostCheckTest(unittest.TestCase):
@@ -254,6 +295,23 @@ class EnsureNetworksTest(unittest.TestCase):
             apply_firewall(plan, {"a": runtime(), "b": runtime("libvirt")}, infra=False)
         chains = {c.name: c for c in apply.call_args.args[0]}
         self.assertIn(bridge_name("testbench-b"), chains[firewall.INPUT_CHAIN].rules[0])
+
+
+class RemoveNetworksTest(unittest.TestCase):
+    def test_networks_by_type(self):
+        plan = plan_networks(NetworkConfig(), ["a", "b"])
+        with (
+            mock.patch("core.networking.docker_utils.remove_docker_network") as docker,
+            mock.patch(
+                "core.networking.libvirt_utils.remove_libvirt_network"
+            ) as libvirt,
+        ):
+            remove_networks(plan, {"a": runtime("docker"), "b": runtime("libvirt")})
+        self.assertEqual(
+            [c.args for c in docker.call_args_list],
+            [("testbench-a",), ("testbench_infra",)],
+        )
+        libvirt.assert_called_once_with("testbench-b")
 
 
 class LibvirtNetworkTest(unittest.TestCase):

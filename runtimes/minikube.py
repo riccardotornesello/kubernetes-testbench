@@ -1,5 +1,6 @@
 """minikube runtime: VMs (kvm2 driver) or docker containers."""
 
+import json
 import os
 import shlex
 import subprocess
@@ -17,7 +18,7 @@ from runtimes.base import (
 )
 from core.log import get_logger
 from core.paths import output_path
-from utils.commands import run_command
+from utils.commands import CommandError, run_command
 from utils.docker_utils import ensure_kernel_modules, install_cni_plugins
 from utils.kubeconfig import get_kubeconfig_location
 from utils.kubernetes_utils import label_nodes
@@ -182,6 +183,21 @@ class MinikubeCluster(BaseRuntime[MinikubeClusterSpec]):
         command = f"sudo ip route replace {network.pool} via {network.gateway}"
         for node in self._get_nodes():
             self._run(["ssh", "-n", node, "--", command])
+
+    def exists(self) -> bool:
+        # --light: no status check of the clusters (slow)
+        try:
+            result = run_command(
+                ["minikube", "profile", "list", "--light", "-o", "json"], capture=True
+            )
+            profiles = json.loads(result.stdout)
+        except (CommandError, ValueError):
+            # No profile at all: minikube may exit with an error
+            return False
+        return any(
+            p.get("Name") == self.name
+            for p in [*(profiles.get("valid") or []), *(profiles.get("invalid") or [])]
+        )
 
     def cleanup(self) -> None:
         self._run(["delete"])

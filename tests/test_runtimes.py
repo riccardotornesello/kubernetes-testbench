@@ -13,6 +13,7 @@ from runtimes.k3d import K3dRuntime, K3dRuntimeSpec
 from runtimes.kind import KindCluster, KindClusterSpec
 from runtimes.minikube import MinikubeCluster, MinikubeClusterSpec
 from tests.helpers import make_settings
+from utils.commands import CommandError
 
 PROXY = NodeProxy(
     address="http://proxy:3128",
@@ -289,6 +290,40 @@ class MinikubeTest(unittest.TestCase):
         self.assertIn(
             "kubeadm.skip-phases=addon/kube-proxy", self.flag(args, "--extra-config")
         )
+
+
+class ExistsTest(unittest.TestCase):
+    def exists(self, cls, spec, module, stdout=None, error=None):
+        runtime = make_runtime(cls, spec)
+        with mock.patch(f"runtimes.{module}.run_command") as run:
+            if error is not None:
+                run.side_effect = error
+            else:
+                run.return_value = mock.Mock(stdout=stdout)
+            return runtime.exists()
+
+    def test_kind(self):
+        spec = KindClusterSpec()
+        self.assertTrue(self.exists(KindCluster, spec, "kind", "other\ntest\n"))
+        self.assertFalse(self.exists(KindCluster, spec, "kind", "testing\n"))
+        self.assertFalse(self.exists(KindCluster, spec, "kind", ""))
+
+    def test_k3d(self):
+        spec = K3dRuntimeSpec()
+        self.assertTrue(self.exists(K3dRuntime, spec, "k3d", '[{"name": "test"}]'))
+        self.assertFalse(self.exists(K3dRuntime, spec, "k3d", '[{"name": "x"}]'))
+        self.assertFalse(self.exists(K3dRuntime, spec, "k3d", "[]"))
+
+    def test_minikube(self):
+        spec = MinikubeClusterSpec()
+        valid = '{"valid": [{"Name": "test"}], "invalid": []}'
+        invalid = '{"valid": [], "invalid": [{"Name": "test"}]}'
+        other = '{"valid": [{"Name": "x"}], "invalid": null}'
+        self.assertTrue(self.exists(MinikubeCluster, spec, "minikube", valid))
+        self.assertTrue(self.exists(MinikubeCluster, spec, "minikube", invalid))
+        self.assertFalse(self.exists(MinikubeCluster, spec, "minikube", other))
+        error = CommandError(85, ["minikube"])
+        self.assertFalse(self.exists(MinikubeCluster, spec, "minikube", error=error))
 
 
 if __name__ == "__main__":

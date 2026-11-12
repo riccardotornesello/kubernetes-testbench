@@ -112,3 +112,13 @@ def ensure_libvirt_network(name: str, cidr: str, gateway: str, pool: str) -> Non
 
     if not _is_active(name):
         _virsh("net-start", name)
+
+
+def remove_libvirt_network(name: str) -> None:
+    """Stops and removes the network `name`, if it exists."""
+    if _current_xml(name) is None:
+        return
+    log.info("Removing network", network=name)
+    if _is_active(name):
+        _virsh("net-destroy", name)
+    _virsh("net-undefine", name)

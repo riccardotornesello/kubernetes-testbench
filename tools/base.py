@@ -58,6 +58,8 @@ class BaseTool(ABC, Generic[SpecT]):
         after_all_operations(...)     -> ONCE in total, after all clusters are up
         <namespaces/workloads from the config are created>
 
+    `down` command: teardown() -> ONCE in total, after the clusters are deleted
+
     Every tool instance receives every hook, for every cluster: a tool that
     should only act on some clusters must filter by itself (see LiqoTool).
     Within each hook, tools are invoked in the order they appear in `tools:`.
@@ -143,4 +145,11 @@ class BaseTool(ABC, Generic[SpecT]):
         # per-cluster hooks. Use it for cross-cluster operations (e.g. peering).
         # Runs BEFORE the namespaces/workloads declared in the config are
         # created.
+        pass
+
+    def teardown(self) -> None:
+        # Called ONCE in total by the `down` command, after the clusters are
+        # deleted and before the networks are removed: remove the shared
+        # infrastructure created by the tool (e.g. the registry proxy
+        # container). Must not fail if it does not exist.
         pass

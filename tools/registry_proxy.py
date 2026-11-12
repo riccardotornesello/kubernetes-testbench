@@ -22,7 +22,11 @@ from tools.base import (
     BaseToolSpec,
     check_known_clusters,
 )
-from utils.docker_utils import ensure_container_connected, ensure_docker_container
+from utils.docker_utils import (
+    ensure_container_connected,
+    ensure_docker_container,
+    get_container,
+)
 
 log = get_logger(__name__)
 
@@ -144,6 +148,13 @@ class RegistryProxyTool(BaseTool[RegistryProxyToolSpec]):
     ) -> None:
         if self.proxy is not None and self._selected(runtime.name):
             runtime.set_node_proxy(self.proxy)
+
+    def teardown(self) -> None:
+        # The cache and the CA stay in the output directory
+        container = get_container(CONTAINER_NAME)
+        if container is not None:
+            log.info("Removing registry proxy", container=CONTAINER_NAME)
+            container.remove(force=True)
 
     def _environment(self) -> dict[str, str]:
         """Environment variables of the proxy container."""

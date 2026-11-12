@@ -191,6 +191,11 @@ class BaseRuntime(ABC, Generic[SpecT]):
             self.cni.wait_ready()
 
     @abstractmethod
+    def exists(self) -> bool:
+        """Whether the cluster exists (even partially, e.g. stopped)."""
+        raise NotImplementedError("Subclasses must implement this method.")
+
+    @abstractmethod
     def cleanup(self) -> None:
         """Deletes the cluster. Must not fail if the cluster does not exist."""
         raise NotImplementedError("Subclasses must implement this method.")

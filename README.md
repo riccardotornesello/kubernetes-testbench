@@ -6,7 +6,8 @@ Liqo, with peerings between clusters) and finally deploys the declared
 workloads.
 
 Every run starts from scratch: clusters with the same names are deleted and
-recreated.
+recreated (after a confirmation, unless `--force`). `down` deletes them,
+together with the shared infrastructure, the networks and the firewall rules.
 
 ## Requirements
 
@@ -20,12 +21,19 @@ recreated.
 ## Usage
 
 ```bash
-uv run python main.py <config.yaml> [--out-dir out] [--log-level INFO] [--log-format console]
+uv run python main.py up <config.yaml> [--force] [--out-dir out] [--log-level INFO] [--log-format console]
+uv run python main.py down <config.yaml> [--out-dir out] [--log-level INFO] [--log-format console]
 ```
+
+| Command | Description                                                                                                                                                                                                                                                                                         |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `up`    | Creates the clusters, their CNI, tools and workloads. If some clusters of the configuration already exist, asks for confirmation before deleting and recreating them (without a terminal it stops with an error: use `--force`). `main.py <config.yaml>` is the same as `main.py up <config.yaml>`. |
+| `down`  | Deletes the clusters of the configuration and their kubeconfigs, the shared infrastructure (registry proxy container), the testbench networks and the firewall rules. The registry proxy cache stays in `<out-dir>`.                                                                                |
 
 | Argument       | Description                                                                                                                                                                             |
 | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `config.yaml`  | Configuration file (see [examples](#examples)).                                                                                                                                         |
+| `--force`      | `up` only: deletes the existing clusters without asking.                                                                                                                                |
 | `--out-dir`    | Directory of the generated files: kubeconfigs, caches, registry proxy data. Default `out`.                                                                                              |
 | `--log-level`  | `DEBUG`, `INFO` (default), `WARNING`, `ERROR`. `DEBUG` also shows the external commands (kind, liqoctl, ...) and their output; otherwise the output is shown only when a command fails. |
 | `--log-format` | `console` (default) or `json` (one object per line).                                                                                                                                    |
@@ -152,7 +160,7 @@ network, and the other testbench networks through the host (route pushed by
 DHCP and set on every VM).
 
 The rules are not persistent: they are lost at reboot and re-applied by the
-next run. To remove them:
+next run. `down` removes them; to remove them by hand:
 
 ```bash
 sudo iptables -D DOCKER-USER -j TESTBENCH-FORWARD   # or -D FORWARD without Docker

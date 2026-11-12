@@ -163,6 +163,26 @@ def ensure_container_connected(
     return container
 
 
+def remove_docker_network(network_name: str) -> None:
+    """
+    Removes the network `network_name`, if it exists. A network with
+    containers still attached (not created by the testbench) is kept.
+    """
+    network = get_network(network_name)
+    if network is None:
+        return
+    network.reload()
+    if network.containers:
+        log.warning(
+            "Network in use, not removed",
+            network=network_name,
+            containers=",".join(c.name for c in network.containers),
+        )
+        return
+    log.info("Removing network", network=network_name)
+    network.remove()
+
+
 def get_network(network_name: str) -> docker.models.networks.Network | None:
     """Network `network_name`, or None."""
     try:

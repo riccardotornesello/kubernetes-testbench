@@ -63,6 +63,7 @@ testbench before `init_cluster` with the type given by `network_type`.
 | Member | Description |
 |---|---|
 | `init_cluster()` | Abstract. Creates the cluster. |
+| `exists()` | Abstract. Whether the cluster exists: `up` asks to confirm before deleting it, `down` skips it if missing. |
 | `cleanup()` | Abstract. Deletes the cluster; must not fail if it does not exist. |
 | `get_api_server_address()` | Abstract. API server URL reachable from the nodes of the other clusters. |
 | `check_dependencies()` | Raises if a dependency (e.g. the CLI) is missing. |
@@ -133,21 +134,23 @@ tool acting only on some clusters filters by itself (e.g. Liqo by its
 | `pre_cni_install` | per cluster | same | CNI customizations (`add_node_selector_requirement`, `add_patch`). |
 | `post_cni_install` | per cluster | same | Cluster ready (`liqoctl install`). |
 | `after_all_operations` | once, after every cluster | same as `before_all_operations` | Cross-cluster operations (peering, offloading). |
+| `teardown()` | once, `down` only, after the clusters are deleted | | Remove the shared infrastructure (registry proxy container). Must not fail if it does not exist. |
 
 Workloads from the configuration are created after `after_all_operations`.
 
 ## Execution flow
 
-Steps executed by `main.py`. Blue = Kubernetes/cluster operations, orange =
+Steps executed by `main.py up`. Blue = Kubernetes/cluster operations, orange =
 tool hooks, grey = internal steps.
 
 ```mermaid
 flowchart TD
-    A([Start: python main.py config.yaml]) --> B[Load and validate YAML config<br/>merge defaults, validate specs and manifests]
+    A([Start: python main.py up config.yaml]) --> B[Load and validate YAML config<br/>merge defaults, validate specs and manifests]
     B --> C[Instantiate tools, runtimes and CNIs]
     C --> C2[Host checks<br/>Docker firewall backend, Fedora warning]
-    C2 --> D[Check runtime, CNI and tool dependencies<br/>sudo -v if firewall rules are needed]
-    D --> E[Delete existing clusters<br/>runtime.cleanup for every cluster]
+    C2 --> D[Check runtime, CNI and tool dependencies]
+    D --> D2[Find the existing clusters, runtime.exists<br/>confirmation unless --force<br/>sudo -v if firewall rules are needed]
+    D2 --> E[Delete existing clusters<br/>runtime.cleanup]
     E --> E2[Ensure the networks<br/>one per cluster, infrastructure if used]
     E2 --> F[tool.before_all_operations<br/>once in total<br/>registry_proxy: start proxy container]
     F --> F2[Apply the firewall rules<br/>routing between the networks]
@@ -171,13 +174,24 @@ flowchart TD
     classDef k8s fill:#bbdefb,stroke:#1565c0,color:#000
     classDef tool fill:#ffe0b2,stroke:#ef6c00,color:#000
 
-    class A,B,C,C2,D,F2,L,N,R,Q internal
+    class A,B,C,C2,D,D2,F2,L,N,R,Q internal
     class E,E2,I,K,P k8s
     class F,H,J,J2,M,O tool
 ```
 
 Clusters are created sequentially, in configuration order. Any exception
 stops the run (clusters already created are left in place).
+
+If some clusters exist, `up` asks for confirmation on the terminal before
+deleting them (`confirm_deletion`); with `--force` it does not ask, and
+without a terminal (stdin not a TTY) it stops with an error.
+
+`main.py down` instead: validates the configuration, checks the runtime
+dependencies (`sudo -v` if firewall rules are used), deletes every existing
+cluster (`runtime.cleanup`) and its kubeconfig, calls `tool.teardown()`,
+removes the networks (`remove_networks`: cluster networks, then the
+infrastructure one; a docker network with containers still attached is
+kept) and the firewall chains (`firewall.remove_chains`).
 
 ## Built-in tools
 
@@ -191,6 +205,7 @@ routing; it is never published on the host.
 `pre_cluster_init` calls `runtime.set_node_proxy(...)` on the selected
 clusters; kind and minikube configure the proxy on every node after creation,
 k3d at creation.
+`teardown` removes the container (cache and CA stay in the output directory).
 
 ### liqo
 
@@ -340,6 +355,7 @@ uv run python -m unittest tests.test_input -v
 | `test_runtimes.py` | kind/k3d configuration, minikube arguments and routes, network types, node proxy. |
 | `test_networking.py` | Network plan, firewall rules and their application, host checks, libvirt network, node summary. |
 | `test_liqo.py` | Liqo spec validation, CNI customizations, `liqoctl` commands, retries. |
+| `test_main.py` | CLI arguments, confirmation before deleting the existing clusters. |
 | `test_commands.py` | `run_command`: output capture, errors. |
 | `test_retry.py` | Exponential backoff. |
 | `test_workloads.py` | Workload creation order, Kubernetes objects, manifest namespaces. |
