@@ -81,6 +81,8 @@ class LiqoToolSpec(BaseToolSpec):
     peerings: List[Tuple[str, str]] = Field(default_factory=list)
     # Retry policy of `liqoctl install` (exponential backoff between attempts)
     install_retry: BackoffConfig = Field(default_factory=BackoffConfig)
+    local_chart_path: Optional[str] = None
+    values: Optional[str] = None
 
     def validate_clusters(self, clusters: list[str]) -> None:
         installed = [inst.cluster for inst in self.installations]
@@ -199,6 +201,11 @@ class LiqoTool(BaseTool[LiqoToolSpec]):
             cluster_log = log.bind(cluster=runtime.name)
             cluster_log.info("No WireGuard in the node kernel: Liqo uses userspace")
             provider_args += ["--set", f"{WIREGUARD_IMPLEMENTATION_VALUE}=userspace"]
+
+        if self.spec.local_chart_path:
+            provider_args += ["--local-chart-path", self.spec.local_chart_path]
+        if self.spec.values:
+            provider_args += ["--values", self.spec.values]
 
         self._install_in_cluster(
             installation=installation,
